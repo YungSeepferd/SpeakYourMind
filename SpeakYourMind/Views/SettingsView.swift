@@ -1,5 +1,6 @@
 import SwiftUI
 import KeyboardShortcuts
+import LaunchAtLogin
 
 struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
@@ -62,6 +63,10 @@ struct SettingsView: View {
                 .onAppear {
                     viewModel.refreshAudioDevices()
                 }
+            }
+
+            Section("Startup") {
+                LaunchAtLogin.Toggle("Launch at Login")
             }
 
             Section("Instant Dictation") {
