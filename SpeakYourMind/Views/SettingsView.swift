@@ -81,6 +81,28 @@ struct SettingsView: View {
                 Toggle("Show recording indicator", isOn: $viewModel.showIndicator)
             }
 
+            Section("Instant Dictation Behavior") {
+                Toggle("Use overlay panel for instant dictation", isOn: $viewModel.instantDictationUsesOverlay)
+                    .help("When ON, instant dictation (⌃⌥⌘) routes speech to the overlay panel. When OFF, text is injected directly into the active field.")
+
+                if !viewModel.instantDictationUsesOverlay {
+                    Text("Direct injection mode: speech will be typed directly into whatever field is focused when you trigger instant dictation.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Overlay mode: the overlay panel opens and receives all speech. Use the overlay's copy/inject controls to send text to another app.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Toggle("Automatically update clipboard during dictation", isOn: $viewModel.autoUpdateClipboard)
+                    .help("When enabled, the clipboard is updated with the latest transcribed text as you speak. Disabled by default to avoid interrupting your clipboard workflow.")
+
+                Text("Clipboard auto-update only applies when using direct injection (streaming) mode.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Edge Trigger Overlay") {
                 Toggle("Show overlay on screen edge", isOn: $viewModel.edgeTriggerEnabled)
                     .help("Show a minimal overlay when cursor hits the top of the screen")
@@ -206,7 +228,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 720)
+        .frame(width: 450, height: 860)
         .onAppear {
             accessibilityGranted = AXIsProcessTrusted()
             viewModel.refreshOnDeviceSupport()

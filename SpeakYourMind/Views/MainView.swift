@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// Main view shown inside the OverlayPanel.
 /// Provides live transcription display, record/stop/reset controls, text editor toggle, and AI processing.
@@ -204,6 +205,18 @@ struct MainView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 400, height: 300)
+        .onReceive(
+            NotificationCenter.default.publisher(for: .instantDictationDidActivateOverlay)
+        ) { _ in
+            // When instant dictation (overlay mode) activates, auto-start recording
+            // in the overlay's own speech manager if not already listening.
+            guard !speechManager.isListening else { return }
+            do {
+                try speechManager.startListening()
+            } catch {
+                // Error surfaces via speechManager.lastError → handleSpeechError
+            }
+        }
         .onChange(of: speechManager.lastError) { newError in
             guard let error = newError else { return }
             handleSpeechError(error)

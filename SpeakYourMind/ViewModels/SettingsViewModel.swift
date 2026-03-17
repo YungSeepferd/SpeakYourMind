@@ -19,6 +19,9 @@ final class SettingsViewModel: ObservableObject {
     private static let selectedAudioDeviceIdKey = "selectedAudioDeviceId"
     private static let edgeTriggerEnabledKey = "edgeTriggerEnabled"
     private static let edgeTriggerSensitivityKey = "edgeTriggerSensitivity"
+    // Instant dictation behavior
+    private static let instantDictationUsesOverlayKey = "instantDictationUsesOverlay"
+    private static let autoUpdateClipboardKey = "autoUpdateClipboard"
     // Ollama
     private static let ollamaEnabledKey = "ollamaEnabled"
     private static let ollamaBaseURLKey = "ollamaBaseURL"
@@ -120,6 +123,32 @@ final class SettingsViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Instant Dictation Behavior Properties
+
+    /// Whether instant dictation routes speech to the overlay panel (true) or injects directly (false).
+    @Published var instantDictationUsesOverlay: Bool = true {
+        didSet {
+            UserDefaults.standard.set(instantDictationUsesOverlay, forKey: Self.instantDictationUsesOverlayKey)
+            NotificationCenter.default.post(
+                name: .instantDictationBehaviorDidChange,
+                object: nil,
+                userInfo: ["usesOverlay": instantDictationUsesOverlay]
+            )
+        }
+    }
+
+    /// Whether to automatically update the clipboard with transcribed text during streaming.
+    @Published var autoUpdateClipboard: Bool = false {
+        didSet {
+            UserDefaults.standard.set(autoUpdateClipboard, forKey: Self.autoUpdateClipboardKey)
+        }
+    }
+
+    /// Toggles the instant dictation overlay routing preference.
+    func toggleInstantDictationUsesOverlay() {
+        instantDictationUsesOverlay.toggle()
+    }
+
     // MARK: - Ollama Properties
 
     /// Whether Ollama AI features are enabled.
@@ -182,6 +211,10 @@ final class SettingsViewModel: ObservableObject {
         // Load edge trigger settings
         self.edgeTriggerEnabled = UserDefaults.standard.object(forKey: Self.edgeTriggerEnabledKey) as? Bool ?? false
         self.edgeTriggerSensitivity = UserDefaults.standard.object(forKey: Self.edgeTriggerSensitivityKey) as? CGFloat ?? EdgeTriggerMonitor.defaultEdgeSensitivity
+        
+        // Load instant dictation behavior settings
+        self.instantDictationUsesOverlay = UserDefaults.standard.object(forKey: Self.instantDictationUsesOverlayKey) as? Bool ?? true
+        self.autoUpdateClipboard = UserDefaults.standard.object(forKey: Self.autoUpdateClipboardKey) as? Bool ?? false
         
         // Load Ollama settings
         self.ollamaEnabled = UserDefaults.standard.object(forKey: Self.ollamaEnabledKey) as? Bool ?? false

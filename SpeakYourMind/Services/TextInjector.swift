@@ -16,6 +16,8 @@ enum InjectionMode: String, CaseIterable {
 extension Notification.Name {
     static let speechLocaleDidChange = Notification.Name("speechLocaleDidChange")
     static let injectionModeDidChange = Notification.Name("injectionModeDidChange")
+    static let instantDictationBehaviorDidChange = Notification.Name("instantDictationBehaviorDidChange")
+    static let instantDictationDidActivateOverlay = Notification.Name("instantDictationDidActivateOverlay")
 }
 
 // MARK: - Injection Error
