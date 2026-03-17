@@ -155,6 +155,11 @@ final class SettingsViewModel: ObservableObject {
     @Published var ollamaEnabled: Bool = false {
         didSet {
             UserDefaults.standard.set(ollamaEnabled, forKey: Self.ollamaEnabledKey)
+            if ollamaEnabled {
+                Task { await checkConnection() }
+            } else {
+                ollamaStatus = "Not checked"
+            }
         }
     }
 
@@ -183,6 +188,21 @@ final class SettingsViewModel: ObservableObject {
 
     /// Status message for the Ollama connection ("Connected", "Checking…", or an error).
     @Published var ollamaStatus: String = "Not checked"
+    
+    /// User-friendly status message based on connection status.
+    var connectionStatusMessage: String {
+        let status = ollamaManager?.connectionStatus ?? .notRunning
+        switch status {
+        case .notInstalled:
+            return "Ollama is not installed. Install from ollama.ai"
+        case .notRunning:
+            return "Ollama server is not running. Open Ollama app or run 'ollama serve'"
+        case .running:
+            return "Connected to Ollama server"
+        case .error(let message):
+            return "Connection error: \(message)"
+        }
+    }
 
     /// The shared OllamaManager instance (nil until Ollama features are first used).
     var ollamaManager: OllamaManager?
@@ -228,6 +248,16 @@ final class SettingsViewModel: ObservableObject {
         // Initialize OllamaManager
         let manager = OllamaManager(baseURL: self.ollamaBaseURL, selectedModel: self.ollamaSelectedModel)
         self.ollamaManager = manager
+        
+        // Auto-check connection if enabled
+        if ollamaEnabled {
+            Task {
+                await checkConnection()
+                if case .running = ollamaManager?.connectionStatus {
+                    refreshOllamaModels()
+                }
+            }
+        }
     }
     
     // MARK: - Public Methods
@@ -242,25 +272,55 @@ final class SettingsViewModel: ObservableObject {
         supportsOnDeviceRecognition = SpeechManager.supportsOnDeviceRecognition(for: selectedLocale)
     }
 
+    /// Checks Ollama connection status and updates published properties.
+    @MainActor
+    func checkConnection() async {
+        guard let manager = ollamaManager else { return }
+        ollamaStatus = "Checking…"
+        let status = await manager.checkConnection()
+        manager.connectionStatus = status
+        ollamaStatus = connectionStatusMessage
+    }
+    
+    /// Manually refreshes connection status.
+    @MainActor
+    func refreshConnectionStatus() async {
+        guard let manager = ollamaManager else { return }
+        ollamaStatus = "Checking…"
+        let status = await manager.checkConnection()
+        manager.connectionStatus = status
+        ollamaStatus = connectionStatusMessage
+    }
+    
     /// Fetches available models from the Ollama server and updates status.
+    /// Checks connection status before fetching.
     func refreshOllamaModels() {
         guard let manager = ollamaManager else { return }
         manager.baseURL = ollamaBaseURL
-        ollamaStatus = "Checking…"
-
-        manager.fetchAvailableModels { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let models):
-                self.ollamaAvailableModels = models
-                self.ollamaStatus = models.isEmpty ? "Connected (no models)" : "Connected"
-                // Auto-select first model if none selected
-                if self.ollamaSelectedModel.isEmpty, let first = models.first {
-                    self.ollamaSelectedModel = first
+        
+        Task {
+            await refreshConnectionStatus()
+            
+            guard case .running = manager.connectionStatus else {
+                ollamaStatus = connectionStatusMessage
+                return
+            }
+            
+            ollamaStatus = "Fetching models…"
+            manager.fetchAvailableModels { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .success(let models):
+                    self.ollamaAvailableModels = models
+                    self.ollamaStatus = models.isEmpty ? "Connected (no models)" : "Connected"
+                    // Auto-select first model if none selected
+                    if self.ollamaSelectedModel.isEmpty, let first = models.first {
+                        self.ollamaSelectedModel = first
+                    }
+                case .failure(let error):
+                    self.ollamaAvailableModels = []
+                    self.ollamaStatus = "Error: \(error.localizedDescription)"
                 }
-            case .failure(let error):
-                self.ollamaAvailableModels = []
-                self.ollamaStatus = "Error: \(error.localizedDescription)"
             }
         }
     }
