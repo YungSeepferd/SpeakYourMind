@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Speech
 import Combine
+import AppKit
 
 /// ViewModel for managing application settings.
 /// Coordinates between SettingsView, SpeechManager, and other services.
@@ -16,6 +17,8 @@ final class SettingsViewModel: ObservableObject {
     private static let playSoundsKey = "playSounds"
     private static let showIndicatorKey = "showIndicator"
     private static let selectedAudioDeviceIdKey = "selectedAudioDeviceId"
+    private static let edgeTriggerEnabledKey = "edgeTriggerEnabled"
+    private static let edgeTriggerSensitivityKey = "edgeTriggerSensitivity"
     
     // MARK: - Published Properties
     
@@ -91,6 +94,28 @@ final class SettingsViewModel: ObservableObject {
     /// Whether on-device recognition is supported for the current locale.
     @Published var supportsOnDeviceRecognition: Bool = false
     
+    /// Whether edge trigger overlay is enabled.
+    @Published var edgeTriggerEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(edgeTriggerEnabled, forKey: Self.edgeTriggerEnabledKey)
+            // Update EdgeTriggerMonitor directly if available
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                appDelegate.edgeTriggerMonitor?.isEnabled = edgeTriggerEnabled
+            }
+        }
+    }
+    
+    /// Edge sensitivity in pixels for edge trigger.
+    @Published var edgeTriggerSensitivity: CGFloat = EdgeTriggerMonitor.defaultEdgeSensitivity {
+        didSet {
+            UserDefaults.standard.set(edgeTriggerSensitivity, forKey: Self.edgeTriggerSensitivityKey)
+            // Update EdgeTriggerMonitor directly if available
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                appDelegate.edgeTriggerMonitor?.edgeSensitivity = edgeTriggerSensitivity
+            }
+        }
+    }
+    
     // MARK: - Initialization
     
     init() {
@@ -111,6 +136,10 @@ final class SettingsViewModel: ObservableObject {
         self.autoCapitalize = UserDefaults.standard.object(forKey: Self.autoCapitalizeKey) as? Bool ?? true
         self.playSounds = UserDefaults.standard.object(forKey: Self.playSoundsKey) as? Bool ?? true
         self.showIndicator = UserDefaults.standard.object(forKey: Self.showIndicatorKey) as? Bool ?? true
+        
+        // Load edge trigger settings
+        self.edgeTriggerEnabled = UserDefaults.standard.object(forKey: Self.edgeTriggerEnabledKey) as? Bool ?? false
+        self.edgeTriggerSensitivity = UserDefaults.standard.object(forKey: Self.edgeTriggerSensitivityKey) as? CGFloat ?? EdgeTriggerMonitor.defaultEdgeSensitivity
         
         // Load available locales and devices
         loadAvailableLocales()

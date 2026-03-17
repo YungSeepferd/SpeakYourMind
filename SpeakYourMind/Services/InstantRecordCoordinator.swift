@@ -48,6 +48,13 @@ final class InstantRecordCoordinator: ObservableObject {
     
     /// Visual indicator panel shown during recording.
     let indicatorPanel: RecordingIndicatorPanel
+    
+    /// Reference to the status item button for positioning the indicator
+    weak var statusItemButton: NSStatusBarButton? {
+        didSet {
+            indicatorPanel.statusItemButton = statusItemButton
+        }
+    }
 
     /// Current state of the coordinator.
     @Published var state: CoordinatorState = .idle

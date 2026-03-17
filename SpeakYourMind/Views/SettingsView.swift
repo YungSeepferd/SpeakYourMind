@@ -81,6 +81,30 @@ struct SettingsView: View {
                 Toggle("Show recording indicator", isOn: $viewModel.showIndicator)
             }
 
+            Section("Edge Trigger Overlay") {
+                Toggle("Show overlay on screen edge", isOn: $viewModel.edgeTriggerEnabled)
+                    .help("Show a minimal overlay when cursor hits the top of the screen")
+                
+                if viewModel.edgeTriggerEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Edge Sensitivity: \(Int(viewModel.edgeTriggerSensitivity))px")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Slider(
+                            value: $viewModel.edgeTriggerSensitivity,
+                            in: EdgeTriggerMonitor.minEdgeSensitivity...EdgeTriggerMonitor.maxEdgeSensitivity,
+                            step: 5
+                        )
+                    }
+                    .help("How close to the screen edge to trigger the overlay (10-30px)")
+                }
+                
+                Text("Move cursor to the top edge of the screen to show the overlay. It will hide after 2 seconds of inactivity or when you press Esc.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section("Permissions") {
                 HStack {
                     Text("Accessibility")

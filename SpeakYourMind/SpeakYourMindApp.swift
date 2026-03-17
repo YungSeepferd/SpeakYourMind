@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var overlayPanel: OverlayPanel!
     var instantCoordinator: InstantRecordCoordinator!
+    var edgeTriggerMonitor: EdgeTriggerMonitor!
     var settingsWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     
@@ -16,6 +17,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Lifecycle
 
+    func applicationWillTerminate(_ notification: Notification) {
+        edgeTriggerMonitor?.stopMonitoring()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize shared settings view model
         AppDelegate.sharedSettingsViewModel = SettingsViewModel()
@@ -23,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenuBarItem()
         setupOverlayPanel()
         setupInstantRecord()
+        setupEdgeTriggerMonitor()
         registerHotkeys()
     }
 
@@ -104,6 +110,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupInstantRecord() {
         instantCoordinator = InstantRecordCoordinator()
+        instantCoordinator.statusItemButton = statusItem.button
+    }
+
+    // MARK: - Edge Trigger Monitor
+
+    private func setupEdgeTriggerMonitor() {
+        edgeTriggerMonitor = EdgeTriggerMonitor()
+        // Start monitoring if enabled (loads from UserDefaults)
+        if edgeTriggerMonitor.isEnabled {
+            edgeTriggerMonitor.startMonitoring()
+        }
     }
 
     // MARK: - Hotkeys
