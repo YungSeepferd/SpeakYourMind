@@ -48,7 +48,7 @@ final class InstantRecordCoordinator: ObservableObject {
     private var injectionMode: InjectionMode = .streaming
 
     /// Whether instant dictation routes to the overlay panel (true) or injects directly (false).
-    private var instantDictationUsesOverlay: Bool = true
+    var instantDictationUsesOverlay: Bool = true
 
     /// Whether to automatically update the clipboard with transcribed text during streaming.
     private var autoUpdateClipboard: Bool = false
@@ -75,7 +75,7 @@ final class InstantRecordCoordinator: ObservableObject {
     /// Callback for showing success messages.
     var onSuccess: ((String) -> Void)?
     
-    private var isRecording = false
+    var isRecording = false
     
     /// Tracks whether we've fallen back to batch mode due to cursor drift.
     private var hasFallenBackToBatch = false
@@ -86,6 +86,12 @@ final class InstantRecordCoordinator: ObservableObject {
         self.permissionsManager = PermissionsManager()
         self.indicatorPanel = RecordingIndicatorPanel()
         setupErrorHandling()
+        speechManager.onFinalResult = { [weak self] text in
+            print("[InstantRecordCoordinator] Final speech result: \(text.prefix(50))...")
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                appDelegate.handleSpeechResult(text)
+            }
+        }
         setupObservers()
     }
     
@@ -185,15 +191,19 @@ final class InstantRecordCoordinator: ObservableObject {
     /// - **Direct injection mode**: Speech is injected directly into the focused field using
     ///   `StreamingTextInjector` (streaming) or `TextInjector` (batch).
     func toggle() {
+        print("[InstantRecordCoordinator] toggle() called, instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
         if isRecording {
+            print("[InstantRecordCoordinator] toggle() → branch: isRecording=true, calling stopAndFinish()")
             stopAndFinish()
         } else {
             // Refresh autoUpdateClipboard in case it changed without a notification
             autoUpdateClipboard = UserDefaults.standard.object(forKey: "autoUpdateClipboard") as? Bool ?? false
 
             if instantDictationUsesOverlay {
+                print("[InstantRecordCoordinator] toggle() → branch: overlay mode, calling showOverlayAndRecord()")
                 showOverlayAndRecord()
             } else {
+                print("[InstantRecordCoordinator] toggle() → branch: direct injection mode, calling startRecordingAsync()")
                 // Reset streaming injector when starting direct injection
                 streamingTextInjector.clearBuffer()
                 hasFallenBackToBatch = false
@@ -217,15 +227,19 @@ final class InstantRecordCoordinator: ObservableObject {
             return
         }
 
+        print("[InstantRecordCoordinator] showOverlayAndRecord() called, overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
+
         // Show and focus the overlay panel
         DispatchQueue.main.async {
             appDelegate.overlayPanel.center()
             appDelegate.overlayPanel.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            print("[InstantRecordCoordinator] showOverlayAndRecord() overlay shown, isVisible=\(appDelegate.overlayPanel.isVisible)")
         }
 
         // Post a notification so MainView can start listening automatically
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            print("[InstantRecordCoordinator] showOverlayAndRecord() posting instantDictationDidActivateOverlay notification")
             NotificationCenter.default.post(
                 name: .instantDictationDidActivateOverlay,
                 object: nil
@@ -327,6 +341,7 @@ final class InstantRecordCoordinator: ObservableObject {
 
     /// Starts direct-injection recording (must be called from main thread).
     private func startDirectRecording() {
+        print("[InstantRecordCoordinator] startDirectRecording() called — injectionMode=\(injectionMode), autoUpdateClipboard=\(autoUpdateClipboard), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
         guard permissionsManager.isAccessibilityGranted else {
             permissionsManager.requestAccessibilityIfNeeded()
             onError?("Accessibility permission required. Please grant access in System Settings.")
@@ -382,6 +397,10 @@ final class InstantRecordCoordinator: ObservableObject {
 
     /// Stops recording and, in direct injection mode, injects the accumulated text.
     private func stopAndFinish() {
+        print("[InstantRecordCoordinator] stopAndFinish() called — isRecording=\(isRecording), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            print("[InstantRecordCoordinator] stopAndFinish() overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
+        }
         isRecording = false
         state = .injecting
         speechManager.stopListening()
@@ -394,19 +413,26 @@ final class InstantRecordCoordinator: ObservableObject {
                 self.state = .idle
                 return
             }
-            
-            let text = self.speechManager.transcribedText
-            let result = self.textInjector.inject(text)
-            
-            switch result {
-            case .success:
+
+            if !self.instantDictationUsesOverlay {
+                // Direct injection mode: inject text into the focused application
+                let text = self.speechManager.transcribedText
+                let result = self.textInjector.inject(text)
+
+                switch result {
+                case .success:
+                    self.state = .idle
+                    self.onSuccess?("Text injected successfully")
+                case .failure(let error):
+                    self.handleInjectionError(error)
+                }
+
+                self.speechManager.resetTranscription()
+            } else {
+                // Overlay mode: skip direct injection — text remains in the overlay panel
+                print("[InstantRecordCoordinator] Overlay mode: skipping direct injection, text stays in overlay")
                 self.state = .idle
-                self.onSuccess?("Text injected successfully")
-            case .failure(let error):
-                self.handleInjectionError(error)
             }
-            
-            self.speechManager.resetTranscription()
         }
     }
 }

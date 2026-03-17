@@ -210,10 +210,17 @@ struct MainView: View {
         ) { _ in
             // When instant dictation (overlay mode) activates, auto-start recording
             // in the overlay's own speech manager if not already listening.
-            guard !speechManager.isListening else { return }
+            print("[MainView] Received instantDictationDidActivateOverlay notification, speechManager.isListening=\(speechManager.isListening)")
+            guard !speechManager.isListening else {
+                print("[MainView] Already listening — skipping startListening()")
+                return
+            }
+            print("[MainView] Calling speechManager.startListening()")
             do {
                 try speechManager.startListening()
+                print("[MainView] speechManager.startListening() succeeded")
             } catch {
+                print("[MainView] speechManager.startListening() threw error: \(error)")
                 // Error surfaces via speechManager.lastError → handleSpeechError
             }
         }

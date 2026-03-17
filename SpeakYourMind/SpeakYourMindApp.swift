@@ -120,6 +120,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         instantCoordinator.statusItemButton = statusItem.button
     }
 
+    /// Handles a finalized speech result from instant dictation.
+    ///
+    /// Injects the transcribed text into the focused field only when:
+    /// - The instant record coordinator is actively recording (`isRecording == true`)
+    /// - Direct injection mode is selected (`instantDictationUsesOverlay == false`)
+    /// - The overlay panel is **not** currently visible (`overlayPanel.isVisible == false`)
+    ///
+    /// The final guard (`!overlayPanel.isVisible`) is a defensive check: even if
+    /// `isRecording` is erroneously `true` during overlay-mode instant dictation,
+    /// injection will still be blocked while the overlay is on screen.
+    func handleSpeechResult(_ text: String) {
+        print("[AppDelegate] handleSpeechResult: isRecording=\(instantCoordinator.isRecording), usesOverlay=\(instantCoordinator.instantDictationUsesOverlay), overlayVisible=\(overlayPanel.isVisible)")
+        // Defensive check: never inject when overlay is visible
+        if overlayPanel.isVisible {
+            print("[AppDelegate] Suppressing direct injection - overlay is visible")
+            return
+        }
+        if instantCoordinator.isRecording && !instantCoordinator.instantDictationUsesOverlay && !overlayPanel.isVisible {
+            _ = instantCoordinator.textInjector.inject(text)
+        }
+    }
+
     // MARK: - Edge Trigger Monitor
 
     private func setupEdgeTriggerMonitor() {
