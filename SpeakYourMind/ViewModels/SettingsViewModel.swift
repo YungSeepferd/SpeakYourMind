@@ -19,6 +19,10 @@ final class SettingsViewModel: ObservableObject {
     private static let selectedAudioDeviceIdKey = "selectedAudioDeviceId"
     private static let edgeTriggerEnabledKey = "edgeTriggerEnabled"
     private static let edgeTriggerSensitivityKey = "edgeTriggerSensitivity"
+    // Ollama
+    private static let ollamaEnabledKey = "ollamaEnabled"
+    private static let ollamaBaseURLKey = "ollamaBaseURL"
+    private static let ollamaSelectedModelKey = "ollamaSelectedModel"
     
     // MARK: - Published Properties
     
@@ -116,6 +120,44 @@ final class SettingsViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Ollama Properties
+
+    /// Whether Ollama AI features are enabled.
+    @Published var ollamaEnabled: Bool = false {
+        didSet {
+            UserDefaults.standard.set(ollamaEnabled, forKey: Self.ollamaEnabledKey)
+        }
+    }
+
+    /// Base URL for the Ollama server.
+    @Published var ollamaBaseURL: String = "http://localhost:11434" {
+        didSet {
+            UserDefaults.standard.set(ollamaBaseURL, forKey: Self.ollamaBaseURLKey)
+            if let manager = ollamaManager {
+                manager.baseURL = ollamaBaseURL
+            }
+        }
+    }
+
+    /// Currently selected Ollama model.
+    @Published var ollamaSelectedModel: String = "" {
+        didSet {
+            UserDefaults.standard.set(ollamaSelectedModel, forKey: Self.ollamaSelectedModelKey)
+            if let manager = ollamaManager {
+                manager.selectedModel = ollamaSelectedModel
+            }
+        }
+    }
+
+    /// Available Ollama model names.
+    @Published var ollamaAvailableModels: [String] = []
+
+    /// Status message for the Ollama connection ("Connected", "Checking…", or an error).
+    @Published var ollamaStatus: String = "Not checked"
+
+    /// The shared OllamaManager instance (nil until Ollama features are first used).
+    var ollamaManager: OllamaManager?
+    
     // MARK: - Initialization
     
     init() {
@@ -141,9 +183,18 @@ final class SettingsViewModel: ObservableObject {
         self.edgeTriggerEnabled = UserDefaults.standard.object(forKey: Self.edgeTriggerEnabledKey) as? Bool ?? false
         self.edgeTriggerSensitivity = UserDefaults.standard.object(forKey: Self.edgeTriggerSensitivityKey) as? CGFloat ?? EdgeTriggerMonitor.defaultEdgeSensitivity
         
+        // Load Ollama settings
+        self.ollamaEnabled = UserDefaults.standard.object(forKey: Self.ollamaEnabledKey) as? Bool ?? false
+        self.ollamaBaseURL = UserDefaults.standard.string(forKey: Self.ollamaBaseURLKey) ?? "http://localhost:11434"
+        self.ollamaSelectedModel = UserDefaults.standard.string(forKey: Self.ollamaSelectedModelKey) ?? ""
+        
         // Load available locales and devices
         loadAvailableLocales()
         loadAvailableAudioDevices()
+        
+        // Initialize OllamaManager
+        let manager = OllamaManager(baseURL: self.ollamaBaseURL, selectedModel: self.ollamaSelectedModel)
+        self.ollamaManager = manager
     }
     
     // MARK: - Public Methods
@@ -156,6 +207,29 @@ final class SettingsViewModel: ObservableObject {
     /// Refreshes on-device recognition support for current locale.
     func refreshOnDeviceSupport() {
         supportsOnDeviceRecognition = SpeechManager.supportsOnDeviceRecognition(for: selectedLocale)
+    }
+
+    /// Fetches available models from the Ollama server and updates status.
+    func refreshOllamaModels() {
+        guard let manager = ollamaManager else { return }
+        manager.baseURL = ollamaBaseURL
+        ollamaStatus = "Checking…"
+
+        manager.fetchAvailableModels { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let models):
+                self.ollamaAvailableModels = models
+                self.ollamaStatus = models.isEmpty ? "Connected (no models)" : "Connected"
+                // Auto-select first model if none selected
+                if self.ollamaSelectedModel.isEmpty, let first = models.first {
+                    self.ollamaSelectedModel = first
+                }
+            case .failure(let error):
+                self.ollamaAvailableModels = []
+                self.ollamaStatus = "Error: \(error.localizedDescription)"
+            }
+        }
     }
     
     // MARK: - Private Methods

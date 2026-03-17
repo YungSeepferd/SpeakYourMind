@@ -138,9 +138,75 @@ struct SettingsView: View {
                     Text("Managed by system").foregroundColor(.secondary)
                 }
             }
+
+            // MARK: - Ollama AI Section
+
+            Section("Ollama AI") {
+                Toggle("Enable AI Features", isOn: $viewModel.ollamaEnabled)
+                    .help("Enable AI text processing via a local Ollama server")
+
+                if viewModel.ollamaEnabled {
+                    HStack {
+                        Text("Base URL:")
+                        TextField("http://localhost:11434", text: $viewModel.ollamaBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    if viewModel.ollamaAvailableModels.isEmpty {
+                        HStack {
+                            Text("Model:")
+                            Text("No models – tap Refresh")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    } else {
+                        Picker("Model:", selection: $viewModel.ollamaSelectedModel) {
+                            ForEach(viewModel.ollamaAvailableModels, id: \.self) { model in
+                                Text(model).tag(model)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Button("Refresh Models") {
+                            viewModel.refreshOllamaModels()
+                        }
+                        Spacer()
+                        // Status indicator
+                        HStack(spacing: 4) {
+                            if viewModel.ollamaStatus == "Checking…" {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .scaleEffect(0.6)
+                                    .frame(width: 14, height: 14)
+                            } else if viewModel.ollamaStatus.hasPrefix("Connected") {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.system(size: 12))
+                            } else if viewModel.ollamaStatus.hasPrefix("Error") {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.system(size: 12))
+                            }
+                            Text(viewModel.ollamaStatus)
+                                .font(.caption)
+                                .foregroundColor(
+                                    viewModel.ollamaStatus.hasPrefix("Connected")
+                                    ? .green
+                                    : viewModel.ollamaStatus.hasPrefix("Error")
+                                        ? .orange : .secondary
+                                )
+                        }
+                    }
+
+                    Text("Ollama must be running locally. Download from https://ollama.ai and pull a model (e.g. ollama pull llama3).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 520)
+        .frame(width: 450, height: 720)
         .onAppear {
             accessibilityGranted = AXIsProcessTrusted()
             viewModel.refreshOnDeviceSupport()

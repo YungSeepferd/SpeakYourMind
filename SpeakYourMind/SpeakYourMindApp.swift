@@ -15,6 +15,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shared settings view model for the app.
     static var sharedSettingsViewModel: SettingsViewModel!
 
+    /// Shared OllamaManager instance, initialized alongside the SettingsViewModel.
+    static var sharedOllamaManager: OllamaManager!
+
     // MARK: - Lifecycle
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -24,6 +27,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Initialize shared settings view model
         AppDelegate.sharedSettingsViewModel = SettingsViewModel()
+        
+        // Share the OllamaManager created by SettingsViewModel
+        AppDelegate.sharedOllamaManager = AppDelegate.sharedSettingsViewModel.ollamaManager
         
         setupMenuBarItem()
         setupOverlayPanel()
@@ -83,7 +89,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupOverlayPanel() {
         overlayPanel = OverlayPanel()
-        let mainView = MainView()
+        let mainView = MainView(ollamaManager: AppDelegate.sharedOllamaManager,
+                                settingsViewModel: AppDelegate.sharedSettingsViewModel)
         let hostingView = NSHostingController(rootView: mainView)
         overlayPanel.contentViewController = hostingView
         

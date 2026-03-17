@@ -2,12 +2,26 @@ import SwiftUI
 import AppKit
 
 /// Main view shown inside the OverlayPanel.
-/// Provides live transcription display, record/stop/reset controls, and text editor toggle.
+/// Provides live transcription display, record/stop/reset controls, text editor toggle, and AI processing.
 struct MainView: View {
     @StateObject var speechManager = SpeechManager()
     @State private var showEditor = false
     @State private var showPermissionAlert = false
     @State private var permissionAlertMessage = ""
+
+    // MARK: - Ollama / AI
+
+    /// Shared OllamaManager passed in from AppDelegate.
+    var ollamaManager: OllamaManager?
+
+    /// SettingsViewModel used to check whether Ollama is enabled.
+    var settingsViewModel: SettingsViewModel?
+
+    @State private var isProcessingAI = false
+    @State private var aiErrorMessage: String? = nil
+    @State private var showAIError = false
+
+    // MARK: - Body
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,28 +55,46 @@ struct MainView: View {
             Divider()
 
             // ── Live transcription ──────────────────────────────
-            if showEditor {
-                TextEditor(text: $speechManager.transcribedText)
-                    .font(.system(size: 14))
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(speechManager.transcribedText.isEmpty
-                             ? "Press record or use your hotkey to start…"
-                             : speechManager.transcribedText)
-                            .font(.system(size: 14))
-                            .foregroundColor(
-                                speechManager.transcribedText.isEmpty
-                                ? .secondary : .primary
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                            .id("bottom")
+            ZStack {
+                if showEditor {
+                    TextEditor(text: $speechManager.transcribedText)
+                        .font(.system(size: 14))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            Text(speechManager.transcribedText.isEmpty
+                                 ? "Press record or use your hotkey to start…"
+                                 : speechManager.transcribedText)
+                                .font(.system(size: 14))
+                                .foregroundColor(
+                                    speechManager.transcribedText.isEmpty
+                                    ? .secondary : .primary
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                                .id("bottom")
+                        }
+                        .onChange(of: speechManager.transcribedText) { _ in
+                            withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                        }
                     }
-                    .onChange(of: speechManager.transcribedText) { _ in
-                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+
+                // Loading overlay during AI processing
+                if isProcessingAI {
+                    ZStack {
+                        Color.black.opacity(0.35)
+                            .cornerRadius(8)
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .scaleEffect(0.9)
+                            Text("Processing…")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white)
+                        }
                     }
                 }
             }
@@ -117,6 +149,31 @@ struct MainView: View {
 
                 Spacer()
 
+                // AI menu (shown when Ollama is enabled and we have text)
+                if settingsViewModel?.ollamaEnabled == true {
+                    Menu {
+                        Button("Correct Spelling") {
+                            triggerOllamaProcessing(instruction: "Correct the spelling and grammar of the following text")
+                        }
+                        Button("Summarize") {
+                            triggerOllamaProcessing(instruction: "Summarize the following text concisely")
+                        }
+                        Button("Generate Prompt") {
+                            triggerOllamaProcessing(instruction: "Rewrite the following as a clear, detailed AI prompt")
+                        }
+                    } label: {
+                        ZStack {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 20))
+                                .foregroundColor(isProcessingAI ? .secondary : .accentColor)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 28, height: 28)
+                    .disabled(speechManager.transcribedText.isEmpty || isProcessingAI)
+                    .help("AI Processing")
+                }
+
                 // Text editor toggle
                 Button {
                     showEditor.toggle()
@@ -160,10 +217,45 @@ struct MainView: View {
         } message: {
             Text(permissionAlertMessage)
         }
+        .alert("AI Error", isPresented: $showAIError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(aiErrorMessage ?? "An unknown error occurred.")
+        }
     }
-    
-    // MARK: - Error Handling
-    
+
+    // MARK: - AI Processing
+
+    private func triggerOllamaProcessing(instruction: String) {
+        guard let manager = ollamaManager else {
+            aiErrorMessage = "Ollama is not configured. Please check Settings."
+            showAIError = true
+            return
+        }
+
+        let text = speechManager.transcribedText
+        guard !text.isEmpty else { return }
+
+        isProcessingAI = true
+
+        manager.selectedModel = settingsViewModel?.ollamaSelectedModel ?? manager.selectedModel
+        manager.baseURL = settingsViewModel?.ollamaBaseURL ?? manager.baseURL
+
+        manager.processText(text, instruction: instruction) { result in
+            // Completion already dispatched to main thread by OllamaManager
+            isProcessingAI = false
+            switch result {
+            case .success(let processedText):
+                speechManager.transcribedText = processedText
+            case .failure(let error):
+                aiErrorMessage = error.localizedDescription
+                showAIError = true
+            }
+        }
+    }
+
+    // MARK: - Speech Error Handling
+
     private func handleSpeechError(_ error: SpeechError) {
         switch error {
         case .microphoneUnavailable, .microphoneDenied, .microphoneRestricted:
@@ -183,7 +275,7 @@ struct MainView: View {
             UserFeedbackManager.shared.showError(message)
         }
     }
-    
+
     private func openSystemSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
             NSWorkspace.shared.open(url)
