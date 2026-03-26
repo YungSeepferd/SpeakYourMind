@@ -157,14 +157,37 @@ final class SpeechManager: NSObject, ObservableObject {
     /// Whether the audio engine is currently capturing and processing speech.
     @Published var isListening = false
     
+    /// Whether recording is currently paused (paused mid-session).
+    @Published var isPaused = false
+    
     /// The current transcribed text from speech recognition.
     @Published var transcribedText = ""
     
     /// The current partial transcribed text from speech recognition (streaming mode).
     @Published var partialText = ""
     
+    /// The current speech recognition locale.
+    @Published var currentLanguage: Locale = Locale(identifier: "en-US")
+    
+    /// Available locales for speech recognition (from SFSpeechRecognizer.supportedLocales).
+    var availableLanguages: [Locale] {
+        Self.availableLocales
+    }
+    
     /// The last error that occurred during speech recognition.
     @Published var lastError: SpeechError?
+    
+    /// Recording start time for duration tracking.
+    private var recordingStartTime: Date?
+    
+    /// Current recording duration in seconds.
+    @Published var recordingDuration: TimeInterval = 0
+    
+    /// Timer for updating duration during recording.
+    private var durationTimer: Timer?
+    
+    /// Paused time offset for duration tracking.
+    private var pausedTimeOffset: TimeInterval = 0
 
     /// Callback invoked when speech recognition produces a final result.
     /// 
@@ -183,8 +206,7 @@ final class SpeechManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        // Initialize with default locale
-        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!
+        speechRecognizer = SFSpeechRecognizer(locale: currentLanguage)!
         
         // Listen for locale changes from SettingsViewModel
         NotificationCenter.default.addObserver(
@@ -210,12 +232,16 @@ final class SpeechManager: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Locale Management
+    // MARK: - Language Management
     
-    /// Sets the speech recognition locale and recreates the recognizer.
+    /// Sets the speech recognition locale and reinitializes the recognizer.
+    /// Preserves transcribed text during language switch.
     /// - Parameter locale: The locale to use for speech recognition.
-    func setLocale(_ locale: Locale) {
-        print("[SpeechManager] Setting locale to: \(locale.identifier)")
+    func setLanguage(_ locale: Locale) {
+        Logger.shared.info("Setting language to: \(locale.identifier)")
+        
+        // Preserve transcribed text
+        let preservedText = transcribedText
         
         // Stop current recognition if active
         if isListening {
@@ -224,9 +250,20 @@ final class SpeechManager: NSObject, ObservableObject {
         
         // Create new recognizer with the specified locale
         speechRecognizer = SFSpeechRecognizer(locale: locale)
+        currentLanguage = locale
         
         // Update on-device support status
         supportsOnDeviceRecognition = Self.supportsOnDeviceRecognition(for: locale)
+        
+        // Restore transcribed text
+        transcribedText = preservedText
+    }
+    
+    /// Sets the speech recognition locale and recreates the recognizer.
+    /// - Parameter locale: The locale to use for speech recognition.
+    /// - Deprecated: Use setLanguage(_:) instead.
+    func setLocale(_ locale: Locale) {
+        setLanguage(locale)
     }
     
     /// Whether on-device speech recognition is supported for the current locale.
@@ -360,8 +397,25 @@ final class SpeechManager: NSObject, ObservableObject {
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         guard micStatus == .authorized else {
             let error = SpeechError.microphoneUnavailable
+            Task {
+                await AuditLogger.shared.error(
+                    category: .speech,
+                    eventType: .startRecording,
+                    message: "Microphone authorization failed",
+                    metadata: ["status": micStatus.rawValue.description]
+                )
+            }
             onError?(error)
             throw error
+        }
+        
+        Task {
+            await AuditLogger.shared.info(
+                category: .speech,
+                eventType: .startRecording,
+                message: "Recording started",
+                metadata: ["locale": String(currentLanguage.identifier)]
+            )
         }
 
         // Cancel any lingering task
@@ -401,7 +455,7 @@ final class SpeechManager: NSObject, ObservableObject {
 
             if let error = error {
                 let speechError = SpeechError.recognitionFailed(underlying: error)
-                print("[SpeechManager] Recognition error: \(error)")
+                Logger.shared.error("Recognition error: \(error)")
                 DispatchQueue.main.async { [weak self] in
                     self?.onError?(speechError)
                 }
@@ -420,15 +474,30 @@ final class SpeechManager: NSObject, ObservableObject {
         do {
             try audioEngine.start()
             isListening = true
+            recordingStartTime = Date()
+            startDurationTimer()
             if UserDefaults.standard.bool(forKey: "playSounds") {
                 NSSound(named: "Tink")?.play()
             }
         } catch {
             let error = SpeechError.audioEngineFailed(underlying: error)
-            print("[SpeechManager] Audio engine failed to start: \(error)")
+            Logger.shared.error("Audio engine failed to start: \(error)")
             onError?(error)
             throw error
         }
+    }
+    
+    private func startDurationTimer() {
+        durationTimer?.invalidate()
+        durationTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let start = self.recordingStartTime else { return }
+            self.recordingDuration = Date().timeIntervalSince(start)
+        }
+    }
+    
+    private func stopDurationTimer() {
+        durationTimer?.invalidate()
+        durationTimer = nil
     }
 
     /// Stops capturing audio and halts speech recognition.
@@ -440,8 +509,149 @@ final class SpeechManager: NSObject, ObservableObject {
         audioEngine.stop()
         recognitionRequest?.endAudio()
         isListening = false
+        isPaused = false
+        stopDurationTimer()
+        recordingStartTime = nil
+        pausedTimeOffset = 0
+        
+        Task {
+            await AuditLogger.shared.info(
+                category: .speech,
+                eventType: .stopRecording,
+                message: "Recording stopped",
+                metadata: ["duration": String(format: "%.1f", recordingDuration)]
+            )
+        }
+        
         if UserDefaults.standard.bool(forKey: "playSounds") {
             NSSound(named: "Pop")?.play()
+        }
+    }
+    
+    /// Pauses recording while preserving transcribed text.
+    /// Call resumeListening() to continue the same session.
+    func pauseListening() {
+        guard isListening && !isPaused else { return }
+        audioEngine.stop()
+        recognitionRequest?.endAudio()
+        isPaused = true
+        isListening = false
+        pausedTimeOffset = recordingDuration
+        stopDurationTimer()
+        
+        Task {
+            await AuditLogger.shared.info(
+                category: .speech,
+                eventType: .pauseRecording,
+                message: "Recording paused",
+                metadata: ["offset": String(format: "%.1f", pausedTimeOffset)]
+            )
+        }
+        
+        Logger.shared.info("Recording paused at \(pausedTimeOffset)s")
+    }
+    
+    /// Resumes recording after pause, preserving transcribed text.
+    /// Continues the same recording session from where it left off.
+    func resumeListening() throws {
+        guard isPaused else { return }
+        
+        // Check microphone authorization
+        let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        guard micStatus == .authorized else {
+            let error = SpeechError.microphoneUnavailable
+            Task {
+                await AuditLogger.shared.error(
+                    category: .speech,
+                    eventType: .resumeRecording,
+                    message: "Microphone authorization failed on resume",
+                    metadata: ["status": micStatus.rawValue.description]
+                )
+            }
+            onError?(error)
+            throw error
+        }
+        
+        Task {
+            await AuditLogger.shared.info(
+                category: .speech,
+                eventType: .resumeRecording,
+                message: "Recording resumed",
+                metadata: ["offset": String(format: "%.1f", pausedTimeOffset)]
+            )
+        }
+        
+        // Cancel any lingering task
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if #available(macOS 13, *) {
+            request.addsPunctuation = true
+        }
+        recognitionRequest = request
+        
+        let inputNode = audioEngine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            request.append(buffer)
+        }
+        
+        recognitionTask = speechRecognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            
+            if let result {
+                let transcription = result.bestTranscription.formattedString
+                DispatchQueue.main.async {
+                    self.transcribedText = transcription
+                    if !result.isFinal {
+                        self.partialText = transcription
+                        self.onPartialResult?(transcription)
+                    }
+                }
+                if result.isFinal {
+                    DispatchQueue.main.async {
+                        self.onFinalResult?(transcription)
+                    }
+                }
+            }
+            
+            if let error = error {
+                let speechError = SpeechError.recognitionFailed(underlying: error)
+                Logger.shared.error("Recognition error: \(error)")
+                DispatchQueue.main.async { [weak self] in
+                    self?.onError?(speechError)
+                }
+            }
+            
+            if error != nil || (result?.isFinal == true) {
+                self.audioEngine.stop()
+                inputNode.removeTap(onBus: 0)
+                self.recognitionRequest = nil
+                self.recognitionTask = nil
+                DispatchQueue.main.async {
+                    self.isListening = false
+                    self.isPaused = false
+                }
+            }
+        }
+        
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            isListening = true
+            isPaused = false
+            // Resume duration tracking from paused offset
+            recordingStartTime = Date()
+            startDurationTimer()
+            Logger.shared.info("Recording resumed from \(pausedTimeOffset)s")
+        } catch {
+            let error = SpeechError.audioEngineFailed(underlying: error)
+            Logger.shared.error("Audio engine failed to resume: \(error)")
+            onError?(error)
+            throw error
         }
     }
 
@@ -512,6 +722,9 @@ final class SpeechManager: NSObject, ObservableObject {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        if #available(macOS 13, *) {
+            request.addsPunctuation = true
+        }
         recognitionRequest = request
 
         let inputNode = audioEngine.inputNode
@@ -542,7 +755,7 @@ final class SpeechManager: NSObject, ObservableObject {
 
             if let error = error {
                 let speechError = SpeechError.recognitionFailed(underlying: error)
-                print("[SpeechManager] Streaming recognition error: \(error)")
+                Logger.shared.error("Streaming recognition error: \(error)")
                 DispatchQueue.main.async { [weak self] in
                     self?.onError?(speechError)
                 }
@@ -570,7 +783,7 @@ final class SpeechManager: NSObject, ObservableObject {
         } catch {
             isStreamingMode = false
             let error = SpeechError.audioEngineFailed(underlying: error)
-            print("[SpeechManager] Streaming audio engine failed to start: \(error)")
+            Logger.shared.error("Streaming audio engine failed to start: \(error)")
             onError?(error)
             throw error
         }

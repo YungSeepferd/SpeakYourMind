@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import Foundation
 
 /// Monitors mouse position to detect when cursor hits the screen edge.
 /// Shows a minimal overlay panel when edge is triggered.
@@ -8,21 +9,13 @@ final class EdgeTriggerMonitor: ObservableObject {
     
     // MARK: - Constants
     
-    /// Default edge trigger sensitivity (pixels from edge)
     static let defaultEdgeSensitivity: CGFloat = 20
-    
-    /// Minimum edge sensitivity
     static let minEdgeSensitivity: CGFloat = 10
-    
-    /// Maximum edge sensitivity
     static let maxEdgeSensitivity: CGFloat = 30
-    
-    /// Delay before hiding overlay after mouse leaves edge area
     static let hideDelay: TimeInterval = 2.0
     
     // MARK: - Published Properties
     
-    /// Whether edge trigger monitoring is enabled
     @Published var isEnabled: Bool = false {
         didSet {
             if isEnabled != oldValue {
@@ -36,7 +29,6 @@ final class EdgeTriggerMonitor: ObservableObject {
         }
     }
     
-    /// Edge sensitivity in pixels (how close to edge to trigger)
     @Published var edgeSensitivity: CGFloat = defaultEdgeSensitivity {
         didSet {
             UserDefaults.standard.set(edgeSensitivity, forKey: "edgeSensitivity")
@@ -46,90 +38,147 @@ final class EdgeTriggerMonitor: ObservableObject {
     
     // MARK: - Private Properties
     
-    /// The overlay panel shown when edge is triggered
     private var overlayWindow: NSWindow?
-    
-    /// Tracking area for mouse movement
-    private var trackingArea: NSTrackingArea?
-    
-    /// Screen to monitor (defaults to main screen)
-    private var targetScreen: NSScreen? {
-        NSScreen.main
-    }
-    
-    /// Timer for delayed hide
+    private var trackingAreas: [NSTrackingArea] = []
     private var hideTimer: Timer?
-    
-    /// Whether the mouse is currently in the trigger area
     private var isMouseInTriggerArea = false
-    
-    /// Whether the overlay is currently visible
     private var isOverlayVisible = false
-    
-    /// Global event monitor for detecting clicks outside overlay
     private var globalEventMonitor: Any?
-    
-    /// Local event monitor for Escape key
     private var localEventMonitor: Any?
+    private var screenChangeObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var lastMouseLocation: NSPoint?
     
     // MARK: - Initialization
     
     init() {
-        // Load saved settings
         isEnabled = UserDefaults.standard.bool(forKey: "edgeTriggerEnabled")
         edgeSensitivity = UserDefaults.standard.object(forKey: "edgeSensitivity") as? CGFloat ?? Self.defaultEdgeSensitivity
-        
-        // Clamp sensitivity to valid range
         edgeSensitivity = max(Self.minEdgeSensitivity, min(Self.maxEdgeSensitivity, edgeSensitivity))
+        
+        setupScreenChangeObserver()
+        setupWakeObserver()
     }
     
     deinit {
         stopMonitoring()
+        removeScreenChangeObserver()
+        removeWakeObserver()
     }
     
     // MARK: - Public Methods
     
-    /// Starts monitoring for edge trigger events
+    var isMonitoring: Bool {
+        !trackingAreas.isEmpty
+    }
+    
     func startMonitoring() {
         guard !isMonitoring else { return }
         
         updateTrackingArea()
         setupEventMonitors()
         
-        print("[EdgeTriggerMonitor] Started monitoring for edge trigger")
+        Logger.shared.info("Started monitoring for edge trigger")
     }
     
-    /// Stops monitoring for edge trigger events
     func stopMonitoring() {
-        removeTrackingArea()
+        removeTrackingAreas()
         removeEventMonitors()
         hideOverlay()
         
-        print("[EdgeTriggerMonitor] Stopped monitoring for edge trigger")
+        Logger.shared.info("Stopped monitoring for edge trigger")
     }
     
-    /// Whether the monitor is currently active
-    var isMonitoring: Bool {
-        trackingArea != nil
+    func resetStuckState() {
+        Logger.shared.warning("Resetting stuck overlay state")
+        hideOverlay()
+        isMouseInTriggerArea = false
+        cancelHideTimer()
+    }
+    
+    // MARK: - Private Methods - Screen Configuration
+    
+    private func setupScreenChangeObserver() {
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleScreenConfigurationChange()
+        }
+    }
+    
+    private func removeScreenChangeObserver() {
+        if let observer = screenChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            screenChangeObserver = nil
+        }
+    }
+    
+    private func handleScreenConfigurationChange() {
+        Logger.shared.info("Screen configuration changed, rebuilding tracking areas")
+        updateTrackingArea()
+    }
+    
+    private func setupWakeObserver() {
+        wakeObserver = NotificationCenter.default.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.resetStuckState()
+        }
+        
+        NotificationCenter.default.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.resetStuckState()
+        }
+    }
+    
+    private func removeWakeObserver() {
+        if let observer = wakeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            wakeObserver = nil
+        }
     }
     
     // MARK: - Private Methods - Tracking Area
     
     private func updateTrackingArea() {
-        removeTrackingArea()
+        removeTrackingAreas()
         
-        guard let screen = targetScreen else { return }
-        
-        // Create a tracking area at the top edge of the screen
+        for screen in NSScreen.screens {
+            addTrackingArea(for: screen)
+        }
+    }
+    
+    private func addTrackingArea(for screen: NSScreen) {
         let screenFrame = screen.frame
-        let triggerRect = NSRect(
-            x: screenFrame.origin.x,
-            y: screenFrame.origin.y + screenFrame.height - edgeSensitivity,
-            width: screenFrame.width,
-            height: edgeSensitivity
-        )
+        let triggerRect: NSRect
         
-        trackingArea = NSTrackingArea(
+        let primaryScreen = NSScreen.screens.max(by: { $0.frame.maxY < $1.frame.maxY })
+        let isPrimaryScreen = screen == primaryScreen
+        
+        if isPrimaryScreen {
+            triggerRect = NSRect(
+                x: screenFrame.origin.x,
+                y: screenFrame.origin.y + screenFrame.height - edgeSensitivity,
+                width: screenFrame.width,
+                height: edgeSensitivity
+            )
+        } else {
+            triggerRect = NSRect(
+                x: screenFrame.origin.x,
+                y: screenFrame.origin.y,
+                width: screenFrame.width,
+                height: edgeSensitivity
+            )
+        }
+        
+        let trackingArea = NSTrackingArea(
             rect: triggerRect,
             options: [
                 .mouseEnteredAndExited,
@@ -141,20 +190,28 @@ final class EdgeTriggerMonitor: ObservableObject {
             userInfo: nil
         )
         
-        // Add tracking area to the first window's content view
-        if let area = trackingArea,
-           let window = NSApplication.shared.windows.first {
-            window.contentView?.addTrackingArea(area)
-            print("[EdgeTriggerMonitor] Tracking area updated: \(triggerRect)")
+        if let window = NSApplication.shared.windows.first(where: { $0.screen == screen }) {
+            window.contentView?.addTrackingArea(trackingArea)
+            trackingAreas.append(trackingArea)
+            Logger.shared.debug("Tracking area added for screen: \(screen.localizedName)")
+        } else if let mainWindow = NSApplication.shared.windows.first {
+            mainWindow.contentView?.addTrackingArea(trackingArea)
+            trackingAreas.append(trackingArea)
         }
     }
     
-    private func removeTrackingArea() {
-        if let area = trackingArea,
-           let window = NSApplication.shared.windows.first {
-            window.contentView?.removeTrackingArea(area)
+    private func removeTrackingAreas() {
+        for area in trackingAreas {
+            for window in NSApplication.shared.windows {
+                window.contentView?.removeTrackingArea(area)
+            }
         }
-        trackingArea = nil
+        trackingAreas.removeAll()
+    }
+    
+    private func screenContainingMouse() -> NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouseLocation) } ?? NSScreen.main
     }
     
     // MARK: - Private Methods - Event Monitors
@@ -195,32 +252,35 @@ final class EdgeTriggerMonitor: ObservableObject {
     // MARK: - Private Methods - Event Handlers
     
     private func handleMouseMoved(_ event: NSEvent) {
-        guard let screen = targetScreen else { return }
+        guard let screen = screenContainingMouse() else { return }
         
         let mouseLocation = NSEvent.mouseLocation
         let screenFrame = screen.frame
-        let topEdge = screenFrame.origin.y + screenFrame.height
         
-        // Check if mouse is within the trigger area (top edge)
-        let isInEdgeArea = mouseLocation.y >= (topEdge - edgeSensitivity)
+        let primaryScreen = NSScreen.screens.max(by: { $0.frame.maxY < $1.frame.maxY })
+        let isPrimaryScreen = screen == primaryScreen
+        
+        let isInEdgeArea: Bool
+        if isPrimaryScreen {
+            isInEdgeArea = mouseLocation.y >= (screenFrame.maxY - edgeSensitivity)
+        } else {
+            isInEdgeArea = mouseLocation.y <= edgeSensitivity
+        }
+        
+        lastMouseLocation = mouseLocation
         
         if isInEdgeArea && !isMouseInTriggerArea {
-            // Mouse entered the edge area
             isMouseInTriggerArea = true
             cancelHideTimer()
             
             if !isOverlayVisible {
-                showOverlay(at: mouseLocation)
+                showOverlay(at: mouseLocation, on: screen)
             }
         } else if !isInEdgeArea && isMouseInTriggerArea {
-            // Mouse left the edge area
             isMouseInTriggerArea = false
-            
-            // Start hide timer
             startHideTimer()
         }
         
-        // If overlay is visible and mouse is in trigger area, keep it visible
         if isOverlayVisible && isInEdgeArea {
             cancelHideTimer()
         }
@@ -244,14 +304,19 @@ final class EdgeTriggerMonitor: ObservableObject {
     
     // MARK: - Private Methods - Overlay
     
-    private func showOverlay(at mouseLocation: NSPoint) {
+    var speechManager: SpeechManager?
+    var sessionStore: RecordingSessionStore?
+
+    private func showOverlay(at mouseLocation: NSPoint, on screen: NSScreen) {
         guard !isOverlayVisible else { return }
+        guard let sm = speechManager, let ss = sessionStore else {
+            Logger.shared.error("EdgeTriggerMonitor missing SpeechManager or RecordingSessionStore")
+            return
+        }
         
-        // Create minimal overlay content
-        let overlayView = EdgeOverlayView()
+        let overlayView = EdgeOverlayView(speechManager: sm, sessionStore: ss)
         let hostingController = NSHostingController(rootView: overlayView)
         
-        // Create borderless window
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 280, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -266,31 +331,24 @@ final class EdgeTriggerMonitor: ObservableObject {
         window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
         
-        // Position near cursor but ensure it stays on screen
-        positionOverlayWindow(window, near: mouseLocation)
+        positionOverlayWindow(window, near: mouseLocation, on: screen)
         
-        // Show the window
         window.orderFront(nil)
         overlayWindow = window
         isOverlayVisible = true
         
-        // Make window key to receive keyboard events
         window.makeKey()
         
-        print("[EdgeTriggerMonitor] Overlay shown at \(mouseLocation)")
+        Logger.shared.debug("Overlay shown at \(mouseLocation)")
     }
     
-    private func positionOverlayWindow(_ window: NSWindow, near mouseLocation: NSPoint) {
-        guard let screen = targetScreen else { return }
-        
+    private func positionOverlayWindow(_ window: NSWindow, near mouseLocation: NSPoint, on screen: NSScreen) {
         let windowSize = window.frame.size
         let screenFrame = screen.frame
         
-        // Position below the cursor (so it doesn't cover the trigger area)
         var originX = mouseLocation.x - (windowSize.width / 2)
         var originY = mouseLocation.y - windowSize.height - 10
         
-        // Ensure window stays within screen bounds
         originX = max(screenFrame.minX + 10, min(originX, screenFrame.maxX - windowSize.width - 10))
         originY = max(screenFrame.minY + 10, min(originY, screenFrame.maxY - windowSize.height - 10))
         
@@ -305,7 +363,7 @@ final class EdgeTriggerMonitor: ObservableObject {
         isOverlayVisible = false
         cancelHideTimer()
         
-        print("[EdgeTriggerMonitor] Overlay hidden")
+        Logger.shared.debug("Overlay hidden")
     }
     
     // MARK: - Private Methods - Timers
@@ -327,85 +385,232 @@ final class EdgeTriggerMonitor: ObservableObject {
     }
 }
 
-// MARK: - Edge Overlay View
-
 /// Minimal overlay view shown when edge is triggered.
 /// Contains a record button and live transcription display.
 struct EdgeOverlayView: View {
-    @StateObject private var speechManager = SpeechManager()
+    @ObservedObject var speechManager: SpeechManager
+    @ObservedObject var sessionStore: RecordingSessionStore
+    @ObservedObject private var feedbackManager = UserFeedbackManager.shared
     @State private var showPermissionAlert = false
     @State private var permissionAlertMessage = ""
+    @FocusState private var focusedField: FocusField?
+    
+    enum FocusField: Hashable {
+        case recordButton
+        case pauseButton
+        case clearButton
+        case closeButton
+    }
     
     var body: some View {
-        VStack(spacing: 8) {
-            // Header with status
-            HStack {
-                Circle()
-                    .fill(speechManager.isListening ? Color.red : Color.gray.opacity(0.4))
-                    .frame(width: 8, height: 8)
-                
-                Text(speechManager.isListening ? "Recording…" : "Tap to speak")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-            }
-            
-            // Live transcription
-            ScrollView {
-                Text(speechManager.transcribedText.isEmpty 
-                     ? "Your speech will appear here…" 
-                     : speechManager.transcribedText)
-                    .font(.system(size: 12))
-                    .foregroundColor(speechManager.transcribedText.isEmpty ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(3)
-            }
-            .frame(height: 40)
-            
-            // Record button
-            Button {
-                toggleRecording()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: speechManager.isListening ? "stop.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 16))
-                    Text(speechManager.isListening ? "Stop" : "Record")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundColor(speechManager.isListening ? .red : .accentColor)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(speechManager.isListening ? Color.red.opacity(0.1) : Color.accentColor.opacity(0.1))
-                )
-            }
-            .buttonStyle(.plain)
+        ZStack {
+            overlayContent
+            ToastContainerView(content: EmptyView(), feedbackManager: feedbackManager)
         }
-        .padding(12)
         .frame(width: 280, height: 120)
+        .onAppear { focusedField = .recordButton }
+        .onChange(of: speechManager.transcribedText) { newText in
+            sessionStore.updateCurrentText(newText)
+            sessionStore.saveSessions()
+        }
         .onChange(of: speechManager.lastError) { newError in
             guard let error = newError else { return }
             handleSpeechError(error: error)
             speechManager.lastError = nil
         }
         .alert("Permission Required", isPresented: $showPermissionAlert) {
-            Button("Open Settings") {
-                openSystemSettings()
-            }
+            Button("Open Settings") { openSystemSettings() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text(permissionAlertMessage)
         }
     }
     
+    @ViewBuilder
+    private var overlayContent: some View {
+        VStack(spacing: 8) {
+            headerView
+            transcriptionView
+            buttonRow
+        }
+        .padding(12)
+    }
+    
+    private var headerView: some View {
+        HStack {
+            // Mode badge
+            Text("Edge Capture")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.1))
+                .cornerRadius(4)
+            
+            Circle()
+                .fill(speechManager.isListening ? Color.red : Color.gray.opacity(0.4))
+                .frame(width: 8, height: 8)
+            
+            Text(speechManager.isListening ? "Recording…" : "Tap to speak")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+            
+            // Session count badge
+            if !sessionStore.sessions.isEmpty {
+                Text("\(sessionStore.sessions.count)")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(3)
+            }
+            
+            Spacer()
+            
+            Button {
+                speechManager.stopListening()
+                sessionStore.markCurrentCompleted()
+                sessionStore.saveSessions()
+                feedbackManager.showRecordingStopped()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.bordered)
+            .focusable()
+            .focused($focusedField, equals: .closeButton)
+            .help("Close")
+            .keyboardShortcut(.cancelAction)
+            .opacity(speechManager.isListening ? 1 : 0)
+            .disabled(!speechManager.isListening)
+        }
+    }
+    
+    private var transcriptionView: some View {
+        ScrollView {
+            Text(speechManager.transcribedText.isEmpty 
+                 ? "Your speech will appear here…" 
+                 : speechManager.transcribedText)
+                .font(.system(size: 12))
+                .foregroundColor(speechManager.transcribedText.isEmpty ? .secondary : .primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(3)
+        }
+        .frame(height: 40)
+    }
+    
+    private var buttonRow: some View {
+        HStack(spacing: 12) {
+            recordButton
+            pauseButton
+            clearButton
+            expandButton
+            Spacer()
+        }
+    }
+    
+    private var recordButton: some View {
+        Button { toggleRecording() } label: {
+            HStack(spacing: 6) {
+                Image(systemName: speechManager.isListening ? "stop.circle.fill" : "mic.circle.fill")
+                    .font(.system(size: 16))
+                Text(speechManager.isListening ? "Stop" : "Record")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundColor(speechManager.isListening ? .red : .accentColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(speechManager.isListening ? Color.red.opacity(0.1) : Color.accentColor.opacity(0.1))
+            )
+        }
+        .buttonStyle(.bordered)
+        .focusable()
+        .focused($focusedField, equals: .recordButton)
+        .help("Record/Stop (⌘R or Space)")
+        .keyboardShortcut(.return, modifiers: [])
+    }
+    
+    private var pauseButton: some View {
+        Button {
+            if speechManager.isListening {
+                speechManager.pauseListening()
+                feedbackManager.showRecordingPaused()
+            } else if speechManager.isPaused {
+                do {
+                    try speechManager.resumeListening()
+                    feedbackManager.showRecordingResumed()
+                } catch { }
+            }
+        } label: {
+            Image(systemName: speechManager.isPaused ? "play.fill" : "pause.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.orange)
+        }
+        .buttonStyle(.bordered)
+        .focusable()
+        .focused($focusedField, equals: .pauseButton)
+        .help("Pause/Resume (⌘P)")
+        .keyboardShortcut("p", modifiers: [.command])
+        .disabled(!speechManager.isListening && !speechManager.isPaused)
+        .opacity(speechManager.isListening || speechManager.isPaused ? 1 : 0.5)
+    }
+    
+    private var clearButton: some View {
+        Button {
+            speechManager.clearAndContinue()
+            feedbackManager.showInfo("Text cleared")
+        } label: {
+            Image(systemName: "arrow.counterclockwise.circle")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+        }
+        .buttonStyle(.bordered)
+        .focusable()
+        .focused($focusedField, equals: .clearButton)
+        .help("Clear text (⌘⌫)")
+        .keyboardShortcut(.delete, modifiers: [.command])
+    }
+    
+    private var expandButton: some View {
+        Button {
+            expandToMainOverlay()
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+        }
+        .buttonStyle(.bordered)
+        .focusable()
+        .help("Expand to main overlay")
+    }
+    
+    private func expandToMainOverlay() {
+        NotificationCenter.default.post(
+            name: .instantDictationDidActivateOverlay,
+            object: nil,
+            userInfo: nil
+        )
+    }
+    
     private func toggleRecording() {
         if speechManager.isListening {
             speechManager.stopListening()
+            sessionStore.markCurrentCompleted()
+            sessionStore.saveSessions()
+            feedbackManager.showRecordingStopped()
         } else {
+            if sessionStore.currentSession == nil {
+                _ = sessionStore.createNewSession()
+                feedbackManager.showNewSession()
+            }
+            speechManager.transcribedText = sessionStore.currentSession?.text ?? ""
             do {
                 try speechManager.startListening()
+                feedbackManager.showRecordingStarted()
             } catch {
                 // Error handled via onChange
             }

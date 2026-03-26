@@ -2,10 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>SpeakYourMind</string>
     <key>CFBundleName</key>
     <string>SpeakYourMind</string>
     <key>CFBundleIdentifier</key>
     <string>com.dinz.speakyourmind</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -20,6 +26,8 @@
     <string>SpeakYourMind needs speech recognition access to convert your speech to text</string>
     <key>LSUIElement</key>
     <false/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
 </dict>

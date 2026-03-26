@@ -1,5 +1,6 @@
 import AppKit
 import Speech
+import Foundation
 
 // MARK: - Coordinator State
 
@@ -52,7 +53,10 @@ final class InstantRecordCoordinator: ObservableObject {
 
     /// Whether to automatically update the clipboard with transcribed text during streaming.
     private var autoUpdateClipboard: Bool = false
-    
+
+    /// Whether to automatically copy transcription to clipboard when recording stops.
+    private var autoCopyOnStop: Bool = false
+
     /// Manages accessibility permissions for text injection.
     let permissionsManager: PermissionsManager
     
@@ -75,6 +79,9 @@ final class InstantRecordCoordinator: ObservableObject {
     /// Callback for showing success messages.
     var onSuccess: ((String) -> Void)?
     
+    /// Reference to UserFeedbackManager for toast notifications.
+    private let feedbackManager = UserFeedbackManager.shared
+    
     var isRecording = false
     
     /// Tracks whether we've fallen back to batch mode due to cursor drift.
@@ -87,7 +94,7 @@ final class InstantRecordCoordinator: ObservableObject {
         self.indicatorPanel = RecordingIndicatorPanel()
         setupErrorHandling()
         speechManager.onFinalResult = { [weak self] text in
-            print("[InstantRecordCoordinator] Final speech result: \(text.prefix(50))...")
+            Logger.shared.info("Final speech result: \(text.prefix(50))...")
             if let appDelegate = NSApp.delegate as? AppDelegate {
                 appDelegate.handleSpeechResult(text)
             }
@@ -127,17 +134,18 @@ final class InstantRecordCoordinator: ObservableObject {
     @objc private func handleInjectionModeChange(_ notification: Notification) {
         if let mode = notification.userInfo?["mode"] as? InjectionMode {
             injectionMode = mode
-            print("[InstantRecordCoordinator] Injection mode changed to: \(mode)")
+            Logger.shared.info("Injection mode changed to: \(mode)")
         }
     }
 
     @objc private func handleInstantDictationBehaviorChange(_ notification: Notification) {
         if let usesOverlay = notification.userInfo?["usesOverlay"] as? Bool {
             instantDictationUsesOverlay = usesOverlay
-            print("[InstantRecordCoordinator] Instant dictation uses overlay: \(usesOverlay)")
+            Logger.shared.info("Instant dictation uses overlay: \(usesOverlay)")
         }
         // Also refresh autoUpdateClipboard from UserDefaults (no separate notification needed)
         autoUpdateClipboard = UserDefaults.standard.object(forKey: "autoUpdateClipboard") as? Bool ?? false
+        autoCopyOnStop = UserDefaults.standard.object(forKey: "autoCopyOnStop") as? Bool ?? false
     }
     
     deinit {
@@ -151,9 +159,10 @@ final class InstantRecordCoordinator: ObservableObject {
     }
     
     private func handleSpeechError(_ error: SpeechError) {
-        print("[InstantRecordCoordinator] Speech error: \(error.localizedDescription)")
+        Logger.shared.error("Speech error: \(error.localizedDescription)")
         state = .error(error.localizedDescription)
         onError?(error.localizedDescription)
+        feedbackManager.handleError(AppError.speech(error))
         
         // Reset to idle after showing error
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
@@ -164,7 +173,7 @@ final class InstantRecordCoordinator: ObservableObject {
     }
     
     private func handleInjectionError(_ error: InjectionError) {
-        print("[InstantRecordCoordinator] Injection error: \(error.localizedDescription)")
+        Logger.shared.error("Injection error: \(error.localizedDescription)")
         
         // Fallback to clipboard copy
         let text = speechManager.transcribedText
@@ -173,13 +182,16 @@ final class InstantRecordCoordinator: ObservableObject {
             switch result {
             case .success:
                 onSuccess?("Copied to clipboard (injection failed)")
+                feedbackManager.showWarning("Injection failed, copied to clipboard instead.")
             case .failure(let copyError):
                 state = .error(copyError.localizedDescription)
                 onError?(copyError.localizedDescription)
+                feedbackManager.handleError(AppError.injection(copyError))
             }
         } else {
             state = .error(error.localizedDescription)
             onError?(error.localizedDescription)
+            feedbackManager.handleError(AppError.injection(error))
         }
     }
 
@@ -191,19 +203,19 @@ final class InstantRecordCoordinator: ObservableObject {
     /// - **Direct injection mode**: Speech is injected directly into the focused field using
     ///   `StreamingTextInjector` (streaming) or `TextInjector` (batch).
     func toggle() {
-        print("[InstantRecordCoordinator] toggle() called, instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
+        Logger.shared.debug("toggle() called, instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
         if isRecording {
-            print("[InstantRecordCoordinator] toggle() → branch: isRecording=true, calling stopAndFinish()")
+            Logger.shared.debug("toggle() → branch: isRecording=true, calling stopAndFinish()")
             stopAndFinish()
         } else {
             // Refresh autoUpdateClipboard in case it changed without a notification
             autoUpdateClipboard = UserDefaults.standard.object(forKey: "autoUpdateClipboard") as? Bool ?? false
 
             if instantDictationUsesOverlay {
-                print("[InstantRecordCoordinator] toggle() → branch: overlay mode, calling showOverlayAndRecord()")
+                Logger.shared.debug("toggle() → branch: overlay mode, calling showOverlayAndRecord()")
                 showOverlayAndRecord()
             } else {
-                print("[InstantRecordCoordinator] toggle() → branch: direct injection mode, calling startRecordingAsync()")
+                Logger.shared.debug("toggle() → branch: direct injection mode, calling startRecordingAsync()")
                 // Reset streaming injector when starting direct injection
                 streamingTextInjector.clearBuffer()
                 hasFallenBackToBatch = false
@@ -223,30 +235,30 @@ final class InstantRecordCoordinator: ObservableObject {
     /// No `StreamingTextInjector` is used, and the clipboard is not touched.
     private func showOverlayAndRecord() {
         guard let appDelegate = NSApp.delegate as? AppDelegate else {
-            print("[InstantRecordCoordinator] AppDelegate unavailable — cannot show overlay")
+            Logger.shared.error("AppDelegate unavailable — cannot show overlay")
             return
         }
 
-        print("[InstantRecordCoordinator] showOverlayAndRecord() called, overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
+        Logger.shared.debug("showOverlayAndRecord() called, overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
 
         // Show and focus the overlay panel
         DispatchQueue.main.async {
             appDelegate.overlayPanel.center()
             appDelegate.overlayPanel.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
-            print("[InstantRecordCoordinator] showOverlayAndRecord() overlay shown, isVisible=\(appDelegate.overlayPanel.isVisible)")
+            Logger.shared.debug("showOverlayAndRecord() overlay shown, isVisible=\(appDelegate.overlayPanel.isVisible)")
         }
 
         // Post a notification so MainView can start listening automatically
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            print("[InstantRecordCoordinator] showOverlayAndRecord() posting instantDictationDidActivateOverlay notification")
+            Logger.shared.debug("showOverlayAndRecord() posting instantDictationDidActivateOverlay notification")
             NotificationCenter.default.post(
                 name: .instantDictationDidActivateOverlay,
                 object: nil
             )
         }
 
-        print("[InstantRecordCoordinator] Overlay mode: opened overlay panel for instant dictation")
+        Logger.shared.info("Overlay mode: opened overlay panel for instant dictation")
         // Recording lifecycle is owned by MainView's speechManager in overlay mode;
         // we do not set isRecording here so subsequent toggles re-show the overlay.
     }
@@ -257,7 +269,7 @@ final class InstantRecordCoordinator: ObservableObject {
     /// - Parameter mode: The injection mode to use (.batch or .streaming)
     func setInjectionMode(_ mode: InjectionMode) {
         injectionMode = mode
-        print("[InstantRecordCoordinator] Injection mode set to: \(mode)")
+        Logger.shared.info("Injection mode set to: \(mode)")
     }
     
     /// Updates the clipboard with the full accumulated text.
@@ -268,7 +280,7 @@ final class InstantRecordCoordinator: ObservableObject {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         _ = pasteboard.setString(text, forType: .string)
-        print("[InstantRecordCoordinator] Clipboard updated with \(text.count) chars (autoUpdateClipboard=true)")
+        Logger.shared.debug("Clipboard updated with \(text.count) chars (autoUpdateClipboard=true)")
     }
     
     /// Handles cursor drift detection and falls back to batch mode if needed.
@@ -282,7 +294,7 @@ final class InstantRecordCoordinator: ObservableObject {
         injectionMode = .batch
         hasFallenBackToBatch = true
         
-        print("[InstantRecordCoordinator] Fell back to batch mode due to cursor drift")
+        Logger.shared.warning("Fell back to batch mode due to cursor drift")
     }
 
     /// Starts recording after checking permissions asynchronously.
@@ -311,15 +323,21 @@ final class InstantRecordCoordinator: ObservableObject {
     
     private func handlePermissionDenied() {
         let status = permissionsManager.accessibilityStatus
+        let message: String
         switch status {
         case .denied:
-            onError?("Accessibility permission denied. Please enable it in System Settings > Privacy & Security > Accessibility.")
+            message = "Accessibility permission denied. Please enable it in System Settings > Privacy & Security > Accessibility."
         case .restricted:
-            onError?("Accessibility permission is restricted. Please contact your administrator.")
+            message = "Accessibility permission is restricted. Please contact your administrator."
         case .notDetermined:
-            onError?("Accessibility permission not determined. Please try again.")
+            message = "Accessibility permission not determined. Please try again."
         case .authorized:
-            break
+            message = ""
+        }
+        
+        if !message.isEmpty {
+            onError?(message)
+            feedbackManager.handleError(AppError.permission(message))
         }
         state = .idle
     }
@@ -327,24 +345,29 @@ final class InstantRecordCoordinator: ObservableObject {
     private func handleSpeechPermissionDenied() {
         let micStatus = speechManager.microphoneStatus
         let speechStatus = speechManager.speechRecognitionStatus
+        let message: String
         
         if micStatus == .denied || micStatus == .restricted {
-            onError?("Microphone permission denied. Please enable it in System Settings > Privacy & Security > Microphone.")
+            message = "Microphone permission denied. Please enable it in System Settings > Privacy & Security > Microphone."
         } else if speechStatus == .denied || speechStatus == .restricted {
-            onError?("Speech recognition permission denied. Please enable it in System Settings > Privacy & Security > Speech Recognition.")
+            message = "Speech recognition permission denied. Please enable it in System Settings > Privacy & Security > Speech Recognition."
         } else {
-            onError?("Permission check failed. Please try again.")
+            message = "Permission check failed. Please try again."
         }
         
+        onError?(message)
+        feedbackManager.handleError(AppError.permission(message))
         state = .idle
     }
 
     /// Starts direct-injection recording (must be called from main thread).
     private func startDirectRecording() {
-        print("[InstantRecordCoordinator] startDirectRecording() called — injectionMode=\(injectionMode), autoUpdateClipboard=\(autoUpdateClipboard), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
+        Logger.shared.debug("startDirectRecording() called — injectionMode=\(injectionMode), autoUpdateClipboard=\(autoUpdateClipboard), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
         guard permissionsManager.isAccessibilityGranted else {
             permissionsManager.requestAccessibilityIfNeeded()
-            onError?("Accessibility permission required. Please grant access in System Settings.")
+            let message = "Accessibility permission required. Please grant access in System Settings."
+            onError?(message)
+            feedbackManager.handleError(AppError.permission(message))
             return
         }
 
@@ -397,9 +420,9 @@ final class InstantRecordCoordinator: ObservableObject {
 
     /// Stops recording and, in direct injection mode, injects the accumulated text.
     private func stopAndFinish() {
-        print("[InstantRecordCoordinator] stopAndFinish() called — isRecording=\(isRecording), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
+        Logger.shared.debug("stopAndFinish() called — isRecording=\(isRecording), instantDictationUsesOverlay=\(instantDictationUsesOverlay)")
         if let appDelegate = NSApp.delegate as? AppDelegate {
-            print("[InstantRecordCoordinator] stopAndFinish() overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
+            Logger.shared.debug("stopAndFinish() overlayPanel.isVisible=\(appDelegate.overlayPanel.isVisible)")
         }
         isRecording = false
         state = .injecting
@@ -423,6 +446,7 @@ final class InstantRecordCoordinator: ObservableObject {
                 case .success:
                     self.state = .idle
                     self.onSuccess?("Text injected successfully")
+                    self.feedbackManager.showInjected()
                 case .failure(let error):
                     self.handleInjectionError(error)
                 }
@@ -430,8 +454,15 @@ final class InstantRecordCoordinator: ObservableObject {
                 self.speechManager.resetTranscription()
             } else {
                 // Overlay mode: skip direct injection — text remains in the overlay panel
-                print("[InstantRecordCoordinator] Overlay mode: skipping direct injection, text stays in overlay")
+                Logger.shared.debug("Overlay mode: skipping direct injection, text stays in overlay")
                 self.state = .idle
+                if self.autoCopyOnStop {
+                    let text = self.speechManager.transcribedText
+                    self.textInjector.copyToClipboard(text)
+                    self.feedbackManager.showCopied()
+                } else {
+                    self.feedbackManager.showRecordingStopped()
+                }
             }
         }
     }

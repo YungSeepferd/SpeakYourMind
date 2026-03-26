@@ -22,10 +22,15 @@ final class SettingsViewModel: ObservableObject {
     // Instant dictation behavior
     private static let instantDictationUsesOverlayKey = "instantDictationUsesOverlay"
     private static let autoUpdateClipboardKey = "autoUpdateClipboard"
+    private static let autoCopyOnStopKey = "autoCopyOnStop"
     // Ollama
     private static let ollamaEnabledKey = "ollamaEnabled"
     private static let ollamaBaseURLKey = "ollamaBaseURL"
     private static let ollamaSelectedModelKey = "ollamaSelectedModel"
+    // Custom Prompts
+    private static let customPromptsKey = "customPrompts"
+    // Built-in AI style overrides
+    private static let builtinStyleOverridesKey = "builtinStyleOverrides"
     
     // MARK: - Published Properties
     
@@ -144,6 +149,13 @@ final class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Whether to automatically copy transcription to clipboard when recording stops.
+    @Published var autoCopyOnStop: Bool = false {
+        didSet {
+            UserDefaults.standard.set(autoCopyOnStop, forKey: Self.autoCopyOnStopKey)
+        }
+    }
+
     /// Toggles the instant dictation overlay routing preference.
     func toggleInstantDictationUsesOverlay() {
         instantDictationUsesOverlay.toggle()
@@ -206,7 +218,18 @@ final class SettingsViewModel: ObservableObject {
 
     /// The shared OllamaManager instance (nil until Ollama features are first used).
     var ollamaManager: OllamaManager?
-    
+
+    // MARK: - Custom Prompts
+
+    /// Custom AI prompts created by the user.
+    @Published var customPrompts: [CustomPrompt] = []
+
+    // MARK: - Built-in AI Style Overrides
+
+    /// Per-style system prompt overrides. Key = AIPromptStyle.rawValue, Value = custom system prompt.
+    /// Empty string means "use default".
+    @Published var builtinStyleOverrides: [String: String] = [:]
+
     // MARK: - Initialization
     
     init() {
@@ -235,11 +258,16 @@ final class SettingsViewModel: ObservableObject {
         // Load instant dictation behavior settings
         self.instantDictationUsesOverlay = UserDefaults.standard.object(forKey: Self.instantDictationUsesOverlayKey) as? Bool ?? true
         self.autoUpdateClipboard = UserDefaults.standard.object(forKey: Self.autoUpdateClipboardKey) as? Bool ?? false
+        self.autoCopyOnStop = UserDefaults.standard.object(forKey: Self.autoCopyOnStopKey) as? Bool ?? false
         
         // Load Ollama settings
         self.ollamaEnabled = UserDefaults.standard.object(forKey: Self.ollamaEnabledKey) as? Bool ?? false
         self.ollamaBaseURL = UserDefaults.standard.string(forKey: Self.ollamaBaseURLKey) ?? "http://localhost:11434"
         self.ollamaSelectedModel = UserDefaults.standard.string(forKey: Self.ollamaSelectedModelKey) ?? ""
+        
+        // Load custom prompts
+        loadCustomPrompts()
+        loadBuiltinStyleOverrides()
         
         // Load available locales and devices
         loadAvailableLocales()
@@ -324,7 +352,89 @@ final class SettingsViewModel: ObservableObject {
             }
         }
     }
-    
+
+    // MARK: - Custom Prompts Methods
+
+    /// Adds a new custom prompt.
+    func addCustomPrompt(_ prompt: CustomPrompt) {
+        customPrompts.append(prompt)
+        saveCustomPrompts()
+    }
+
+    /// Deletes a custom prompt by ID.
+    func deleteCustomPrompt(_ id: UUID) {
+        customPrompts.removeAll { $0.id == id }
+        saveCustomPrompts()
+    }
+
+    /// Edits an existing custom prompt.
+    func editCustomPrompt(_ id: UUID, newName: String, newInstruction: String, newSystemPrompt: String = "") {
+        if let index = customPrompts.firstIndex(where: { $0.id == id }) {
+            customPrompts[index].name = newName
+            customPrompts[index].instruction = newInstruction
+            customPrompts[index].systemPrompt = newSystemPrompt
+            saveCustomPrompts()
+        }
+    }
+
+    private func loadCustomPrompts() {
+        guard let data = UserDefaults.standard.data(forKey: Self.customPromptsKey),
+              let prompts = try? JSONDecoder().decode([CustomPrompt].self, from: data) else {
+            customPrompts = []
+            return
+        }
+        customPrompts = prompts
+    }
+
+    private func saveCustomPrompts() {
+        guard let data = try? JSONEncoder().encode(customPrompts) else { return }
+        UserDefaults.standard.set(data, forKey: Self.customPromptsKey)
+    }
+
+    // MARK: - Built-in AI Style Override Methods
+
+    /// Returns the effective system prompt for a built-in style (user override or default).
+    func effectiveSystemPrompt(for style: AIPromptStyle) -> String {
+        if let override = builtinStyleOverrides[style.rawValue],
+           !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return override
+        }
+        return style.systemPrompt
+    }
+
+    /// Sets a user override for a built-in style's system prompt.
+    /// Pass empty string to revert to the default.
+    func setBuiltinStyleOverride(_ style: AIPromptStyle, systemPrompt: String) {
+        builtinStyleOverrides[style.rawValue] = systemPrompt
+        saveBuiltinStyleOverrides()
+    }
+
+    /// Resets a built-in style's system prompt to its default.
+    func resetBuiltinStyleToDefault(_ style: AIPromptStyle) {
+        builtinStyleOverrides.removeValue(forKey: style.rawValue)
+        saveBuiltinStyleOverrides()
+    }
+
+    /// Whether a built-in style has a user override.
+    func hasOverride(for style: AIPromptStyle) -> Bool {
+        guard let override = builtinStyleOverrides[style.rawValue] else { return false }
+        return !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func loadBuiltinStyleOverrides() {
+        guard let data = UserDefaults.standard.data(forKey: Self.builtinStyleOverridesKey),
+              let overrides = try? JSONDecoder().decode([String: String].self, from: data) else {
+            builtinStyleOverrides = [:]
+            return
+        }
+        builtinStyleOverrides = overrides
+    }
+
+    private func saveBuiltinStyleOverrides() {
+        guard let data = try? JSONEncoder().encode(builtinStyleOverrides) else { return }
+        UserDefaults.standard.set(data, forKey: Self.builtinStyleOverridesKey)
+    }
+
     // MARK: - Private Methods
     
     private func loadAvailableLocales() {
@@ -355,7 +465,7 @@ final class SettingsViewModel: ObservableObject {
         )
         
         guard status == noErr else {
-            print("[SettingsViewModel] Failed to get audio devices size: \(status)")
+            Logger.shared.error("Failed to get audio devices size: \(status)")
             // Fallback: add default device
             devices.append(AudioDevice(id: "default", name: "Default Microphone"))
             availableAudioDevices = devices
@@ -375,7 +485,7 @@ final class SettingsViewModel: ObservableObject {
         )
         
         guard status == noErr else {
-            print("[SettingsViewModel] Failed to get audio devices: \(status)")
+            Logger.shared.error("Failed to get audio devices: \(status)")
             devices.append(AudioDevice(id: "default", name: "Default Microphone"))
             availableAudioDevices = devices
             return

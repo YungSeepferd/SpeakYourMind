@@ -4,6 +4,7 @@ import LaunchAtLogin
 
 struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
+    @StateObject private var feedbackManager = UserFeedbackManager.shared
     
     @AppStorage("autoCapitalize") private var autoCapitalize = true
     @AppStorage("playSounds") private var playSounds = true
@@ -98,6 +99,9 @@ struct SettingsView: View {
                 Toggle("Automatically update clipboard during dictation", isOn: $viewModel.autoUpdateClipboard)
                     .help("When enabled, the clipboard is updated with the latest transcribed text as you speak. Disabled by default to avoid interrupting your clipboard workflow.")
 
+                Toggle("Auto-copy to clipboard", isOn: $viewModel.autoCopyOnStop)
+                    .help("Automatically copy transcription to clipboard when recording stops")
+
                 Text("Clipboard auto-update only applies when using direct injection (streaming) mode.")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -138,9 +142,9 @@ struct SettingsView: View {
                     } else {
                         Button("Grant Access") {
                             PermissionsManager().requestAccessibilityIfNeeded()
-                            // Start polling
                             pollAccessibility()
                         }
+                        .buttonStyle(.bordered)
                     }
                 }
 
@@ -192,11 +196,12 @@ struct SettingsView: View {
                     HStack {
                         Button("Refresh Models") {
                             viewModel.refreshOllamaModels()
+                            feedbackManager.showInfo("Fetching models...")
                         }
                         Spacer()
                         // Status indicator
                         HStack(spacing: 4) {
-                            if viewModel.ollamaStatus == "Checking…" {
+                            if viewModel.ollamaStatus == "Checking…" || viewModel.ollamaStatus == "Fetching models…" {
                                 ProgressView()
                                     .progressViewStyle(.circular)
                                     .scaleEffect(0.6)
@@ -220,15 +225,25 @@ struct SettingsView: View {
                                 )
                         }
                     }
+                    .overlay(
+                        ToastContainerView(content: EmptyView(), feedbackManager: feedbackManager)
+                    )
 
                     Text("Ollama must be running locally. Download from https://ollama.ai and pull a model (e.g. ollama pull llama3).")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
             }
+
+            // MARK: - AI Prompts Section
+            if viewModel.ollamaEnabled {
+                Section("AI Prompts") {
+                    CustomPromptsView(viewModel: viewModel)
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 860)
+        .frame(width: 450, height: 920)
         .onAppear {
             accessibilityGranted = AXIsProcessTrusted()
             viewModel.refreshOnDeviceSupport()

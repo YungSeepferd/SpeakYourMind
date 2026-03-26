@@ -1,138 +1,229 @@
 import Foundation
 import AppKit
+import SwiftUI
+import Combine
 
-/// Types of user feedback messages following macOS patterns.
-enum FeedbackType {
-    /// Critical errors requiring immediate attention (uses NSAlert).
-    case error
-    /// Warnings about potential issues (uses status bar).
-    case warning
-    /// Success confirmations (uses status bar).
-    case success
-    /// Informational messages (uses status bar).
-    case info
+/// Toast notification for user feedback, displayed near the overlay panel.
+final class ToastNotification: ObservableObject, Identifiable {
+    let id = UUID()
+    let message: String
+    let type: ToastType
+    let createdAt = Date()
     
-    var title: String {
-        switch self {
-        case .error: return "Error"
-        case .warning: return "Warning"
-        case .success: return "Success"
-        case .info: return "Info"
+    @Published var opacity: Double = 0
+    @Published var scale: CGFloat = 0.8
+    
+    init(message: String, type: ToastType) {
+        self.message = message
+        self.type = type
+    }
+    
+    func animateIn() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            opacity = 1
+            scale = 1.0
         }
     }
     
-    var symbolName: String {
-        switch self {
-        case .error: return "exclamationmark.triangle.fill"
-        case .warning: return "exclamationmark.circle.fill"
-        case .success: return "checkmark.circle.fill"
-        case .info: return "info.circle.fill"
+    func animateOut(completion: @escaping () -> Void) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            opacity = 0
+            scale = 0.9
         }
-    }
-    
-    var tintColor: NSColor {
-        switch self {
-        case .error: return .systemRed
-        case .warning: return .systemOrange
-        case .success: return .systemGreen
-        case .info: return .systemBlue
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            completion()
         }
     }
 }
 
-/// Centralized manager for user feedback following macOS app patterns.
-/// Uses NSAlert for critical errors and status bar for non-critical messages.
-final class UserFeedbackManager {
+/// Types of toast notifications.
+enum ToastType {
+    case success
+    case info
+    case warning
+    
+    var symbolName: String {
+        switch self {
+        case .success: return "checkmark.circle.fill"
+        case .info: return "info.circle.fill"
+        case .warning: return "exclamationmark.circle.fill"
+        }
+    }
+    
+    var color: Color {
+        switch self {
+        case .success: return .green
+        case .info: return .blue
+        case .warning: return .orange
+        }
+    }
+    
+    var displayDuration: TimeInterval {
+        switch self {
+        case .success: return 2.0
+        case .info: return 2.5
+        case .warning: return 3.0
+        }
+    }
+}
+
+/// Centralized manager for user feedback with toast notifications.
+/// Provides immediate, contextual feedback for all user actions.
+final class UserFeedbackManager: ObservableObject {
     
     /// Shared singleton instance.
     static let shared = UserFeedbackManager()
     
-    private var statusItem: NSStatusItem?
-    private var statusBarTimer: Timer?
+    @Published var toasts: [ToastNotification] = []
+    private var cancellables = Set<AnyCancellable>()
     
-    private init() {
-        setupStatusItem()
-    }
+    private init() {}
     
     // MARK: - Public API
     
-    /// Shows feedback to the user based on the feedback type.
+    /// Shows a toast notification for user feedback.
     /// - Parameters:
-    ///   - feedback: The type of feedback to display.
     ///   - message: The message to display.
-    func show(_ feedback: FeedbackType, message: String) {
-        switch feedback {
-        case .error:
-            showAlert(title: feedback.title, message: message)
-        case .warning, .success, .info:
-            showStatusBarMessage(message, isError: feedback == .warning)
+    ///   - type: The type of feedback (success, info, warning).
+    func showToast(_ message: String, type: ToastType = .info) {
+        let toast = ToastNotification(message: message, type: type)
+        
+        DispatchQueue.main.async {
+            self.toasts.append(toast)
+            toast.animateIn()
+            
+            // Auto-remove after duration
+            DispatchQueue.main.asyncAfter(deadline: .now() + toast.type.displayDuration) {
+                toast.animateOut {
+                    DispatchQueue.main.async {
+                        self.toasts.removeAll { $0.id == toast.id }
+                    }
+                }
+            }
         }
     }
     
-    /// Convenience method for showing error feedback.
-    func showError(_ message: String) {
-        show(.error, message: message)
-    }
-    
-    /// Convenience method for showing warning feedback.
-    func showWarning(_ message: String) {
-        show(.warning, message: message)
-    }
-    
-    /// Convenience method for showing success feedback.
+    /// Shows success feedback.
     func showSuccess(_ message: String) {
-        show(.success, message: message)
+        showToast(message, type: .success)
     }
     
-    /// Convenience method for showing info feedback.
+    /// Shows info feedback.
     func showInfo(_ message: String) {
-        show(.info, message: message)
+        showToast(message, type: .info)
     }
     
-    // MARK: - Private Helpers
-    
-    private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem?.isVisible = false
+    /// Shows warning feedback.
+    func showWarning(_ message: String) {
+        showToast(message, type: .warning)
     }
     
-    /// Shows an NSAlert for critical errors.
-    private func showAlert(title: String, message: String) {
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        
-        // Make alert modal to the app
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
-    }
-    
-    /// Shows a temporary status bar message for non-critical feedback.
-    private func showStatusBarMessage(_ message: String, isError: Bool) {
-        guard let button = statusItem?.button else { return }
-        
-        // Cancel any existing timer
-        statusBarTimer?.invalidate()
-        
-        // Configure the status item
-        button.image = NSImage(systemSymbolName: isError ? "exclamationmark.triangle.fill" : "info.circle.fill",
-                               accessibilityDescription: "Status")
-        button.image?.isTemplate = false
-        button.contentTintColor = isError ? .systemOrange : .secondaryLabelColor
-        button.title = " \(message)"
-        statusItem?.isVisible = true
-        
-        // Auto-hide after 4 seconds
-        statusBarTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
-            self?.hideStatusBarMessage()
+    /// Shows critical error using NSAlert.
+    func showError(_ message: String) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Error"
+            alert.informativeText = message
+            alert.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
         }
     }
     
-    /// Hides the status bar message.
-    private func hideStatusBarMessage() {
-        statusItem?.isVisible = false
-        statusItem?.button?.title = ""
+    // MARK: - Centralized Error Handling
+    
+    /// Handles an AppError, logging it and displaying appropriate UI feedback
+    func handleAppError(_ error: AppError) {
+        let code = error.errorCode
+        let message = error.errorDescription ?? "An unknown error occurred."
+        let suggestion = error.recoverySuggestion
+        
+        Logger.shared.error("[\(code)] \(message) - \(error.failureReason ?? "")")
+        
+        if error.isCritical {
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = "Error (\(code))"
+                if let suggestion = suggestion {
+                    alert.informativeText = "\(message)\n\n\(suggestion)"
+                } else {
+                    alert.informativeText = message
+                }
+                alert.addButton(withTitle: "OK")
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        } else {
+            showWarning(message)
+        }
+    }
+    
+    /// Overload to handle generic errors by wrapping them in AppError
+    func handleError(_ error: Error) {
+        if let appError = error as? AppError {
+            handleAppError(appError)
+        } else if let speechError = error as? SpeechError {
+            handleAppError(.speech(speechError))
+        } else if let aiError = error as? OllamaError {
+            handleAppError(.ai(aiError))
+        } else if let injectionError = error as? InjectionError {
+            handleAppError(.injection(injectionError))
+        } else {
+            handleAppError(.system(error))
+        }
+    }
+    
+    // MARK: - Action Feedback Helpers
+    
+    /// Feedback for copy action.
+    func showCopied() {
+        showSuccess("Copied to clipboard")
+    }
+    
+    /// Feedback for text injection.
+    func showInjected() {
+        showSuccess("Text injected")
+    }
+    
+    /// Feedback for recording started.
+    func showRecordingStarted() {
+        showInfo("Recording started")
+    }
+    
+    /// Feedback for recording stopped.
+    func showRecordingStopped() {
+        showSuccess("Recording saved")
+    }
+    
+    /// Feedback for recording paused.
+    func showRecordingPaused() {
+        showInfo("Paused")
+    }
+    
+    /// Feedback for recording resumed.
+    func showRecordingResumed() {
+        showInfo("Resumed")
+    }
+    
+    /// Feedback for new session created.
+    func showNewSession() {
+        showInfo("New session")
+    }
+    
+    /// Feedback for session deleted.
+    func showSessionDeleted() {
+        showWarning("Session deleted")
+    }
+    
+    /// Feedback for AI processing complete.
+    func showAIComplete(action: String) {
+        showSuccess("\(action) complete")
+    }
+    
+    /// Feedback for AI processing failed.
+    func showAIFailed(error: String) {
+        showWarning("AI failed: \(error)")
     }
 }

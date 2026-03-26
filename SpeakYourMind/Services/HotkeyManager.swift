@@ -101,13 +101,7 @@ final class HotkeyManager: ObservableObject {
     }
     
     func setupHotkeys() {
-        // Set up the modifier-only hotkey monitor
-        modifierMonitor.onTrigger = { [weak self] in
-            self?.handleInstantRecordTrigger()
-        }
-        modifierMonitor.start()
-        
-        // Also listen to KeyboardShortcuts for the regular shortcut
+        // Listen to KeyboardShortcuts for the regular hotkey
         KeyboardShortcuts.onKeyUp(for: .instantRecord) { [weak self] in
             // This handles cases where user sets a non-modifier shortcut
             self?.handleInstantRecordTrigger()

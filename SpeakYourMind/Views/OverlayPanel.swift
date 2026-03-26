@@ -4,10 +4,10 @@ import AppKit
 /// Appears centered like Spotlight. Steals focus intentionally.
 final class OverlayPanel: NSPanel {
 
-    init(contentRect: NSRect = NSRect(x: 0, y: 0, width: 420, height: 340)) {
+    init(contentRect: NSRect = NSRect(x: 0, y: 0, width: 400, height: 300)) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.titled, .closable, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -17,6 +17,11 @@ final class OverlayPanel: NSPanel {
         titleVisibility = .hidden
         backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.97)
         isReleasedWhenClosed = false
+
+        // Constrain minimum window size so controls never clip
+        minSize = NSSize(width: 320, height: 140)
+        maxSize = NSSize(width: 800, height: 900)
+
         center()
 
         // Allow Esc to close
@@ -31,5 +36,5 @@ final class OverlayPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { false }
+    override var canBecomeMain: Bool { true }
 }

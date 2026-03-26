@@ -96,6 +96,14 @@ private struct OllamaGenerateRequest: Encodable {
     let model: String
     let prompt: String
     let stream: Bool
+    let system: String?
+
+    init(model: String, prompt: String, stream: Bool, system: String? = nil) {
+        self.model = model
+        self.prompt = prompt
+        self.stream = stream
+        self.system = system
+    }
 }
 
 private struct OllamaGenerateResponse: Decodable {
@@ -312,20 +320,44 @@ final class OllamaManager: ObservableObject {
     /// Calls `completion` on the main thread.
     func processText(_ text: String,
                      instruction: String,
+                     systemPrompt: String? = nil,
                      completion: @escaping (Result<String, Error>) -> Void) {
         guard let url = URL(string: "\(baseURL)/api/generate") else {
+            Task {
+                await AuditLogger.shared.error(
+                    category: .ai,
+                    eventType: .promptProcessing,
+                    message: "Invalid Ollama URL",
+                    metadata: ["baseURL": baseURL]
+                )
+            }
             DispatchQueue.main.async {
                 completion(.failure(OllamaError.invalidURL))
             }
             return
         }
+        
+        Task {
+            await AuditLogger.shared.info(
+                category: .ai,
+                eventType: .promptProcessing,
+                message: "Processing text with AI",
+                metadata: [
+                    "model": selectedModel,
+                    "instruction": String(instruction.prefix(50)),
+                    "hasSystemPrompt": systemPrompt != nil ? "true" : "false",
+                    "textLength": String(text.count)
+                ]
+            )
+        }
 
-        let prompt = "\(instruction): \"\(text)\""
+        let prompt = "\(instruction):\n\n\"\"\"\n\(text)\n\"\"\""
 
         let requestBody = OllamaGenerateRequest(
             model: selectedModel,
             prompt: prompt,
-            stream: false
+            stream: false,
+            system: systemPrompt
         )
 
         guard let bodyData = try? JSONEncoder().encode(requestBody) else {
@@ -407,20 +439,55 @@ final class OllamaManager: ObservableObject {
                 let generatedText = generateResponse.response.trimmingCharacters(in: .whitespacesAndNewlines)
 
                 if generatedText.isEmpty {
+                    Task { [weak self] in
+                        await self?.auditLogEmptyResponse()
+                    }
                     DispatchQueue.main.async {
                         completion(.failure(OllamaError.emptyResponse))
                     }
                     return
+                }
+                
+                let responseLength = generatedText.count
+                let model = self?.selectedModel ?? "unknown"
+                
+                Task {
+                    await AuditLogger.shared.info(
+                        category: .ai,
+                        eventType: .promptProcessing,
+                        message: "AI processing completed successfully",
+                        metadata: [
+                            "model": model,
+                            "responseLength": String(responseLength)
+                        ]
+                    )
                 }
 
                 DispatchQueue.main.async {
                     completion(.success(generatedText))
                 }
             } catch {
+                Task {
+                    await AuditLogger.shared.error(
+                        category: .ai,
+                        eventType: .promptProcessing,
+                        message: "Failed to decode AI response",
+                        metadata: ["error": error.localizedDescription]
+                    )
+                }
                 DispatchQueue.main.async {
                     completion(.failure(OllamaError.decodingError(error)))
                 }
             }
         }.resume()
+    }
+    
+    private func auditLogEmptyResponse() async {
+        await AuditLogger.shared.warning(
+            category: .ai,
+            eventType: .promptProcessing,
+            message: "AI returned empty response",
+            metadata: ["model": selectedModel]
+        )
     }
 }

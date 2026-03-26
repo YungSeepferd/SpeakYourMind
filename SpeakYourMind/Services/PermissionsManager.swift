@@ -248,7 +248,7 @@ final class PermissionsManager: ObservableObject {
             }
             
             if Date().timeIntervalSince(startTime) >= timeout {
-                print("[PermissionsManager] Permission check timed out after \(timeout) seconds")
+                Logger.shared.error("Permission check timed out after \(timeout) seconds")
                 accessibilityStatus = .denied
                 completion(.failure(.timeout))
                 return

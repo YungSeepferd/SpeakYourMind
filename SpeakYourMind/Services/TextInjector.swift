@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import Foundation
 
 // MARK: - Injection Mode
 
@@ -83,7 +84,7 @@ final class TextInjector {
         
         // Check for frontmost app
         guard NSWorkspace.shared.frontmostApplication != nil else {
-            print("[TextInjector] No frontmost application found")
+            Logger.shared.error("No frontmost application found")
             return .failure(.noFrontmostApp)
         }
 
@@ -107,7 +108,7 @@ final class TextInjector {
         // 2. Put our transcription on the clipboard
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            print("[TextInjector] Failed to set clipboard content")
+            Logger.shared.error("Failed to set clipboard content")
             return .failure(.clipboardFailed)
         }
 
@@ -119,7 +120,7 @@ final class TextInjector {
 
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
-            print("[TextInjector] Failed to create keyboard events")
+            Logger.shared.error("Failed to create keyboard events")
             return .failure(.eventPostFailed)
         }
         
@@ -128,7 +129,7 @@ final class TextInjector {
         keyDown.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         keyUp.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         
-        print("[TextInjector] Successfully injected text: \(text.prefix(50))...")
+        Logger.shared.info("Successfully injected text: \(text.prefix(50))...")
 
         // 4. Restore previous clipboard after the paste has landed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -154,10 +155,10 @@ final class TextInjector {
     func copyToClipboard(_ text: String) -> Result<String, InjectionError> {
         let pasteboard = NSPasteboard.general
         guard pasteboard.setString(text, forType: .string) else {
-            print("[TextInjector] Failed to copy text to clipboard")
+            Logger.shared.error("Failed to copy text to clipboard")
             return .failure(.clipboardFailed)
         }
-        print("[TextInjector] Copied text to clipboard: \(text.prefix(50))...")
+        Logger.shared.info("Copied text to clipboard: \(text.prefix(50))...")
         return .success(text)
     }
     
@@ -182,7 +183,7 @@ final class TextInjector {
         guard !text.isEmpty else { return .failure(.clipboardFailed) }
         
         guard NSWorkspace.shared.frontmostApplication != nil else {
-            print("[TextInjector] No frontmost application found")
+            Logger.shared.error("No frontmost application found")
             return .failure(.noFrontmostApp)
         }
         
@@ -206,7 +207,7 @@ final class TextInjector {
         // Put text on clipboard
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            print("[TextInjector] Failed to set clipboard content")
+            Logger.shared.error("Failed to set clipboard content")
             return .failure(.clipboardFailed)
         }
         
@@ -218,7 +219,7 @@ final class TextInjector {
         
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
-            print("[TextInjector] Failed to create keyboard events")
+            Logger.shared.error("Failed to create keyboard events")
             return .failure(.eventPostFailed)
         }
         
@@ -227,7 +228,7 @@ final class TextInjector {
         keyDown.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         keyUp.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         
-        print("[TextInjector] Streaming injected text: \(text.prefix(50))...")
+        Logger.shared.info("Streaming injected text: \(text.prefix(50))...")
         
         // Restore previous clipboard after the paste has landed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -277,7 +278,7 @@ final class StreamingTextInjector {
     /// - Parameter newText: The new text to append to the buffer.
     func updateBuffer(_ newText: String) {
         accumulatedText += newText
-        print("[StreamingTextInjector] Buffer updated. Total accumulated: \(accumulatedText.count) chars")
+        Logger.shared.debug("Buffer updated. Total accumulated: \(accumulatedText.count) chars")
     }
     
     /// Injects only the delta (new text since last injection) to the target application.
@@ -287,13 +288,13 @@ final class StreamingTextInjector {
         let delta = calculateDelta()
         
         guard !delta.isEmpty else {
-            print("[StreamingTextInjector] No delta to inject")
+            Logger.shared.debug("No delta to inject")
             return ""
         }
         
         // Check for cursor drift
         if detectCursorDrift() {
-            print("[StreamingTextInjector] Cursor drift detected! Resetting tracking and injecting from current position")
+            Logger.shared.warning("Cursor drift detected! Resetting tracking and injecting from current position")
             lastInjectedLength = 0
             cursorPositionHistory.removeAll()
         }
@@ -302,7 +303,7 @@ final class StreamingTextInjector {
         try injectViaAccessibilityAPI(delta)
         
         lastInjectedLength = accumulatedText.count
-        print("[StreamingTextInjector] Incremental injection complete. Injected \(delta.count) chars, total tracked: \(lastInjectedLength)")
+        Logger.shared.debug("Incremental injection complete. Injected \(delta.count) chars, total tracked: \(lastInjectedLength)")
         
         return delta
     }
@@ -313,20 +314,20 @@ final class StreamingTextInjector {
     /// - Returns: Result containing the injected full text on success, or an InjectionError on failure.
     func flush() async throws -> String {
         guard !accumulatedText.isEmpty else {
-            print("[StreamingTextInjector] Nothing to flush")
+            Logger.shared.debug("Nothing to flush")
             return ""
         }
         
         // Check for cursor drift before final flush
         if detectCursorDrift() {
-            print("[StreamingTextInjector] Cursor drift detected before flush! Injecting from current position")
+            Logger.shared.warning("Cursor drift detected before flush! Injecting from current position")
         }
         
         // Inject all accumulated text
         try injectViaAccessibilityAPI(accumulatedText)
         
         let injectedText = accumulatedText
-        print("[StreamingTextInjector] Flushed \(injectedText.count) chars")
+        Logger.shared.info("Flushed \(injectedText.count) chars")
         
         // Reset tracking state
         accumulatedText = ""
@@ -341,7 +342,7 @@ final class StreamingTextInjector {
         accumulatedText = ""
         lastInjectedLength = 0
         cursorPositionHistory.removeAll()
-        print("[StreamingTextInjector] Buffer cleared")
+        Logger.shared.debug("Buffer cleared")
     }
     
     /// Returns the current accumulated text without injecting.
@@ -372,7 +373,7 @@ final class StreamingTextInjector {
         let hasDrifted = drift > cursorDriftThreshold
         
         if hasDrifted {
-            print("[StreamingTextInjector] Cursor drift detected: \(drift) chars (threshold: \(cursorDriftThreshold))")
+            Logger.shared.warning("Cursor drift detected: \(drift) chars (threshold: \(cursorDriftThreshold))")
         }
         
         return hasDrifted
@@ -389,7 +390,7 @@ final class StreamingTextInjector {
         let startIndex = accumulatedText.index(accumulatedText.startIndex, offsetBy: lastInjectedLength)
         let delta = String(accumulatedText[startIndex...])
         
-        print("[StreamingTextInjector] Delta calculated: \(delta.count) chars (total: \(accumulatedText.count), last injected: \(lastInjectedLength))")
+        Logger.shared.debug("Delta calculated: \(delta.count) chars (total: \(accumulatedText.count), last injected: \(lastInjectedLength))")
         
         return delta
     }
@@ -401,7 +402,7 @@ final class StreamingTextInjector {
         guard !text.isEmpty else { return }
         
         guard NSWorkspace.shared.frontmostApplication != nil else {
-            print("[StreamingTextInjector] No frontmost application found")
+            Logger.shared.error("No frontmost application found")
             throw InjectionError.noFrontmostApp
         }
         
@@ -414,7 +415,7 @@ final class StreamingTextInjector {
         // Put text on clipboard
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            print("[StreamingTextInjector] Failed to set clipboard content")
+            Logger.shared.error("Failed to set clipboard content")
             throw InjectionError.clipboardFailed
         }
         
@@ -426,7 +427,7 @@ final class StreamingTextInjector {
         
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: false) else {
-            print("[StreamingTextInjector] Failed to create keyboard events")
+            Logger.shared.error("Failed to create keyboard events")
             throw InjectionError.eventPostFailed
         }
         
@@ -435,7 +436,7 @@ final class StreamingTextInjector {
         keyDown.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         keyUp.post(tap: CGEventTapLocation.cgAnnotatedSessionEventTap)
         
-        print("[StreamingTextInjector] Injected via accessibility API: \(text.prefix(50))...")
+        Logger.shared.info("Injected via accessibility API: \(text.prefix(50))...")
         
         // Restore clipboard after a delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -468,6 +469,6 @@ final class StreamingTextInjector {
             cursorPositionHistory.removeFirst()
         }
         
-        print("[StreamingTextInjector] Cursor position recorded: \(position). History count: \(cursorPositionHistory.count)")
+        Logger.shared.debug("Cursor position recorded: \(position). History count: \(cursorPositionHistory.count)")
     }
 }
